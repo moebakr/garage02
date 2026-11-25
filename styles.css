@@ -159,7 +159,7 @@ img { display: block; }
 .excluded { background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.25); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 13.5px; margin-top: 10px; }
 
 /* ---------- Swipe ---------- */
-.swipe-wrap { position: relative; height: calc(100vh - var(--tabbar-h) - var(--safe-b) - var(--safe-t) - 150px); min-height: 430px; max-width: 520px; margin: 6px auto 0; }
+.swipe-wrap { position: relative; height: calc(100vh - var(--tabbar-h) - var(--safe-b) - var(--safe-t) - 215px); min-height: 400px; max-width: 520px; margin: 6px auto 0; }
 .swipe-card { position: absolute; inset: 0; border-radius: 22px; overflow: hidden; background: var(--surface); border: 1px solid var(--line2); box-shadow: 0 18px 40px rgba(0,0,0,.45); touch-action: none; user-select: none; -webkit-user-select: none; will-change: transform; display: flex; flex-direction: column; }
 .swipe-card.behind { transform: scale(.95) translateY(12px); opacity: .6; }
 .swipe-photo { position: relative; flex: 1; min-height: 0; background: #000; }
@@ -224,3 +224,38 @@ img { display: block; }
 }
 
 [dir="rtl"] #dback svg { transform: scaleX(-1); }
+
+/* ---------- Für dich ---------- */
+.fy-sub { font-size: 12.5px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+.fy-card { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; margin-bottom: 14px; }
+.fy-card:active { transform: scale(.99); }
+.fy-photo { position: relative; aspect-ratio: 16 / 10; background: var(--surface3); }
+.fy-photo img { width: 100%; height: 100%; object-fit: cover; }
+.fy-grad { position: absolute; inset: auto 0 0 0; height: 60%; background: linear-gradient(transparent, rgba(0,0,0,.85)); }
+.fy-info { position: absolute; inset: auto 14px 12px 14px; color: #fff; }
+.fy-info h3 { margin: 0 0 5px; font-size: 20px; line-height: 1.15; }
+.fy-info .row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 11px; font-size: 14px; }
+.fy-info .row b { font-size: 18px; }
+.fy-bottom { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; }
+.fy-why { font-size: 13px; color: var(--accent); font-weight: 600; }
+
+/* ---------- Marktwert / Rang ---------- */
+.deal { font-size: 11.5px; font-weight: 700; padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
+.deal.good { background: rgba(52,211,153,.18); color: var(--good); }
+.deal.bad { background: rgba(248,113,113,.14); color: var(--bad); }
+.deal.neutral { background: rgba(163,173,189,.12); color: var(--info); }
+.rank { position: absolute; bottom: 6px; inset-inline-start: 6px; min-width: 24px; height: 24px; border-radius: 8px; background: rgba(12,14,18,.82); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; padding: 0 6px; }
+.market { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin-top: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
+.market small { display: block; font-size: 11.5px; color: var(--muted); }
+.market b { font-size: 16px; }
+.market > div:last-child { text-align: end; }
+.imp-line { margin-top: 10px; font-size: 13.5px; color: var(--muted); display: flex; align-items: center; }
+.imp-line b { color: var(--text); margin-inline-start: 4px; }
+
+/* ---------- Bewertungsfilter (Top) ---------- */
+.raterow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.raterow .seg.mini { margin: 0; flex: none; padding: 2px; }
+.raterow .seg.mini button { padding: 6px 10px; font-size: 12px; }
+.raterow .rchips { padding-top: 0; margin: 0; flex: 1; }
+.raterow .rchips .chip { padding: 6px 10px; font-size: 12px; }
+.tabbar button span { font-size: 10.5px; }

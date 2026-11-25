@@ -9,8 +9,10 @@
   const GROUP_COLOR = { M54B30: "#5b9bff", M57: "#b49cff", M43: "#2dd4bf", M54B25: "#7cb6ff", M54B22: "#a9cdff", M47: "#d4c6ff", VW16: "#fbbf24", VW18T: "#fb7185" };
   const RATING_COLOR = { 5: "var(--r5)", 4: "var(--r4)", 3: "var(--r3)", 2: "var(--r2)", 1: "var(--r1)" };
   const LABEL_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#6366f1", "#a855f7", "#ec4899", "#64748b"];
-  const DEFAULT_FILTERS = { radius: "ab", maxPrice: 4000, tuv: "any", severe: false, showNo: false, source: "all" };
+  const DEFAULT_FILTERS = { radius: "all", maxPrice: 5000, tuv: "any", severe: false, showNo: false, source: "all" };
   const ICON = {
+    spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
+    trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8 20h8M9 20l1-3h4l1 3"/></svg>',
     car: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M3 13l2-6a2 2 0 0 1 2-1.4h10A2 2 0 0 1 19 7l2 6v4a1 1 0 0 1-1 1h-1a1 1 0 0 1-1-1v-1H6v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><circle cx="7.5" cy="13.5" r="1"/><circle cx="16.5" cy="13.5" r="1"/></svg>',
     swipe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="17" rx="3"/><path d="M3 7v10M21 7v10"/></svg>',
     bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
@@ -22,10 +24,12 @@
 
   // ---------------- Zustand ----------------
   const st = {
-    tab: "cars", lang: "de", data: null, idx: null,
+    tab: "foryou", lang: "de", data: null, idx: null,
     playlist: localStorage.getItem("g2-playlist") || "all",
-    sort: localStorage.getItem("g2-sort") || "score",
-    q: "", filters: Object.assign({}, DEFAULT_FILTERS, JSON.parse(localStorage.getItem("g2-filters") || "{}")),
+    sort: localStorage.getItem("g2-sort2") || "offer",
+    rateWho: "me", rateVal: "all",
+    fySeed: (Math.random() * 1e9) | 0, fyCount: 20, skipped: new Set(),
+    q: "", filters: Object.assign({}, DEFAULT_FILTERS, JSON.parse(localStorage.getItem("g2-filters2") || "{}")),
     detail: null, swipeQueue: null, undo: [], lastVisit: null, listScroll: 0,
   };
 
@@ -66,7 +70,9 @@
   // ---------------- Daten-Index ----------------
   function buildIndex() {
     const d = st.data;
-    const idx = { car: {}, ratings: {}, labels: {}, carLabels: {}, comments: {}, events: {} };
+    const idx = { car: {}, ratings: {}, labels: {}, carLabels: {}, comments: {}, events: {}, imp: {} };
+    d.impressions = d.impressions || [];
+    d.impressions.forEach(i => { (idx.imp[i.car_id] = idx.imp[i.car_id] || {})[i.user_id] = i; });
     d.cars.forEach(c => idx.car[c.id] = c);
     d.ratings.forEach(r => { (idx.ratings[r.car_id] = idx.ratings[r.car_id] || {})[r.user_id] = r; });
     d.labels.forEach(l => idx.labels[l.id] = l);
@@ -104,7 +110,7 @@
     return (y - now.getFullYear()) * 12 + ((m || 6) - (now.getMonth() + 1));
   }
   function combinedScore(c) {
-    let s = c.score || 0;
+    let s = c.offer_score ?? c.score ?? 0;
     const rs = st.idx.ratings[c.id] || {};
     for (const uid in rs) s += { 5: 22, 4: 11, 3: 3, 2: -10, 1: -35 }[rs[uid].rating] || 0;
     return s;
@@ -119,8 +125,9 @@
     if (!c.eligible && !c.manual) return false;
     if (playlist === "problems") return !!c.severe;
     if (c.severe && !f.severe) return false;
-    if (f.radius === "a" && c.zone === "B") return false;
-    if (f.maxPrice < 4000 && c.price_eur != null && c.price_eur > f.maxPrice) return false;
+    if (f.radius === "a" && (c.zone === "B" || c.zone === "C")) return false;
+    if (f.radius === "ab" && c.zone === "C") return false;
+    if (f.maxPrice < 5000 && c.price_eur != null && c.price_eur > f.maxPrice) return false;
     if (f.tuv !== "any") { const l = huLeft(c); if (l == null || l < (f.tuv === "12" ? 12 : 0)) return false; }
     if (f.source !== "all" && c.source !== f.source) return false;
     if (!f.showNo && canWrite() && myRating(c.id) === 1 && playlist !== "unrated") return false;
@@ -138,9 +145,16 @@
     const hay = [c.title, c.series, c.variant, c.engine_code, c.engine_group, c.location_text, c.zip, c.body, c.make, c.model].join(" ").toLowerCase();
     return q.toLowerCase().split(/\s+/).every(w => hay.includes(w));
   }
-  function visibleCars(playlist = st.playlist) {
-    const list = st.data.cars.filter(c => inBase(c, playlist) && inPlaylist(c, playlist) && matchQuery(c, st.q));
+  function rateOk(c) {
+    if (st.rateVal === "all") return true;
+    const uid = st.rateWho === "me" ? me().user_id : st.rateWho;
+    const r = ratingOf(c.id, uid);
+    return st.rateVal === "none" ? r == null : r === Number(st.rateVal);
+  }
+  function visibleCars(playlist = st.playlist, withRate = true) {
+    const list = st.data.cars.filter(c => inBase(c, playlist) && inPlaylist(c, playlist) && matchQuery(c, st.q) && (!withRate || rateOk(c)));
     const by = {
+      offer: (a, b) => (b.offer_score ?? b.score ?? 0) - (a.offer_score ?? a.score ?? 0),
       score: (a, b) => combinedScore(b) - combinedScore(a),
       new: (a, b) => (b.first_seen || "").localeCompare(a.first_seen || ""),
       price: (a, b) => (a.price_eur ?? 1e9) - (b.price_eur ?? 1e9),
@@ -166,7 +180,8 @@
       if (l.text === "TÜV abgelaufen") return t("lbl_hu_exp");
       return t("lbl_hu", { d: l.text.replace(/^TÜV\s*/, "") });
     }
-    if (k === "preis") return t(l.text === "Top-Preis" ? "lbl_preis_top" : "lbl_preis_hoch");
+    if (k === "preis") return t(l.text === "Top-Preis" ? "lbl_preis_top" : l.text === "Über Budget" ? "lbl_preis_over" : "lbl_preis_hoch");
+    if (k === "markt") return t(l.tone === "good" ? "lbl_markt_good" : "lbl_markt_bad");
     if (k === "km") return t(l.text === "Wenig km" ? "lbl_km_low" : "lbl_km_high");
     if (k === "unfall" && l.text === "Beschädigt") return t("lbl_beschaedigt");
     const v = t("lbl_" + k);
@@ -180,7 +195,7 @@
       if (l) out.push(`<span class="tag custom" style="background:${esc(l.color)}">${esc(l.name)}</span>`);
     });
     const order = { bad: 0, warn: 1, good: 2, info: 3 };
-    (c.auto_labels || []).filter(l => !(l.key === "zone")).sort((a, b) => order[a.tone] - order[b.tone])
+    (c.auto_labels || []).filter(l => !(l.key === "zone" || (l.key === "markt" && c.expected_price))).sort((a, b) => order[a.tone] - order[b.tone])
       .forEach(l => out.push(`<span class="tag ${esc(l.tone)}">${esc(autoLabelText(l))}</span>`));
     return out.slice(0, max || 99).join("");
   }
@@ -192,20 +207,21 @@
   }
   const firstImg = (c) => safeUrl((c.images || [])[0]);
 
-  function cardHtml(c) {
+  function cardHtml(c, i) {
+    const rank = (typeof i === "number" && st.sort === "offer") ? `<span class="rank num">${i + 1}</span>` : "";
     const img = firstImg(c);
     const d = priceDelta(c);
     const gone = isGone(c);
     const stamp = gone ? t("st_deleted") : c.status === "reserved" ? t("st_reserved") : c.archived ? t("st_archived") : "";
     return `<article class="card${gone ? " is-gone" : ""}" data-id="${esc(c.id)}">
       <div class="thumb">${img ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(img)}" alt="">` : `<div class="noimg">—</div>`}
-        <div class="raters">${raterDots(c)}</div>${stamp ? `<div class="stamp">${esc(stamp)}</div>` : ""}</div>
+        <div class="raters">${raterDots(c)}</div>${rank}${stamp ? `<div class="stamp">${esc(stamp)}</div>` : ""}</div>
       <div class="c-body">
         <div class="c-head"><div class="c-title">${esc(carTitle(c))}</div>
           <div class="c-price num">${esc(fmtPrice(c.price_eur))}${d ? `<small class="${d < 0 ? "down" : "up"}">${d < 0 ? "↓ " : "↑ "}${esc(fmtNum(Math.abs(d)))} €</small>` : ""}</div></div>
         <div class="c-facts">${engineChip(c)}<span class="num"><b>${esc(fmtKm(c.mileage_km))}</b></span><span class="num">· ${esc(c.year || "–")}</span>
           <span class="num">· ${c.dist_km != null ? esc(c.dist_km + " km") : "? km"}</span></div>
-        <div class="tags">${tagsHtml(c, 6)}</div>
+        <div class="tags">${dealHtml(c)}${tagsHtml(c, 6)}</div>
       </div></article>`;
   }
 
@@ -213,14 +229,14 @@
   function render() {
     document.documentElement.lang = st.lang;
     document.documentElement.dir = st.lang === "ar" ? "rtl" : "ltr";
-    const tabs = [["cars", ICON.car, t("tab_cars")]];
+    const tabs = [["foryou", ICON.spark, t("tab_foryou")], ["cars", ICON.trophy, t("tab_top")]];
     if (canWrite()) tabs.push(["swipe", ICON.swipe, t("tab_swipe")]);
     tabs.push(["feed", ICON.bell, t("tab_feed")], ["more", ICON.more, t("tab_more")]);
     const unread = feedItems().filter(i => st.lastVisit && i.at > st.lastVisit).length;
     $app.innerHTML = `<div id="view"></div>
       <nav class="tabbar">${tabs.map(([k, ic, lab]) => `<button data-tab="${k}" class="${st.tab === k ? "on" : ""}">${ic}<span>${esc(lab)}</span>${k === "feed" && unread ? `<span class="badge">${unread > 99 ? "99+" : unread}</span>` : ""}</button>`).join("")}</nav>`;
     $app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
-    ({ cars: renderCars, swipe: renderSwipe, feed: renderFeed, more: renderMore })[st.tab]();
+    ({ foryou: renderForYou, cars: renderCars, swipe: renderSwipe, feed: renderFeed, more: renderMore })[st.tab]();
   }
   function switchTab(tab) {
     if (st.tab === "cars") st.listScroll = window.scrollY;
@@ -235,8 +251,22 @@
     return r ? `${t("last_run")}: ${ago(r.finished_at)}` : "";
   }
 
-  // ---------------- Render: Autos ----------------
+  // ---------------- Render: Top-Liste ----------------
+  // Bewertungs-Filter: wessen Bewertung (ich / der andere) und welche Stufe
+  function rateRowHtml() {
+    const rs = raters();
+    if (!rs.length) return "";
+    const opts = canWrite()
+      ? [["me", t("rated_me")]].concat(rs.filter(m => m.user_id !== me().user_id).map(m => [m.user_id, m.name]))
+      : rs.map(m => [m.user_id, m.name]);
+    const whoBtns = opts.length > 1
+      ? `<div class="seg mini">${opts.map(([k, l]) => `<button data-rw="${esc(k)}" class="${st.rateWho === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>` : "";
+    const vals = [["all", t("all")], ["5", t("r5")], ["4", t("r4")], ["3", t("r3")], ["2", t("r2")], ["1", t("r1")], ["none", t("not_rated_short")]];
+    return `<div class="raterow">${whoBtns}<div class="chips rchips">${vals.map(([k, l]) =>
+      `<button class="chip${st.rateVal === k ? " on" : ""}" data-rv="${k}">${RATING_COLOR[k] ? `<i class="dot" style="background:${RATING_COLOR[k]}"></i>` : ""}${esc(l)}</button>`).join("")}</div></div>`;
+  }
   function renderCars() {
+    if (!canWrite() && st.rateWho === "me" && raters()[0]) st.rateWho = raters()[0].user_id;
     const view = document.getElementById("view");
     const chips = [["all", t("all")], ["fav", "★ " + t("favorites")]];
     if (canWrite()) chips.push(["unrated", t("unrated")]);
@@ -253,14 +283,17 @@
           <button class="icon-btn" id="filterbtn" aria-label="${esc(t("filters"))}">${ICON.filter}${nf ? `<span class="badge">${nf}</span>` : ""}</button></div>
         <div class="chips">${chips.filter(([k]) => counts[k] > 0 || ["all", "fav", "unrated"].includes(k) || k === st.playlist).map(([k, lab, col]) =>
           `<button class="chip${st.playlist === k ? " on" : ""}" data-pl="${esc(k)}">${col ? `<i class="dot" style="background:${esc(col)}"></i>` : GROUP_COLOR[k] ? `<i class="dot" style="background:${GROUP_COLOR[k]}"></i>` : ""}${esc(lab)} <span class="cnt">${counts[k]}</span></button>`).join("")}</div>
+        ${rateRowHtml()}
         <div class="sortrow"><span>${esc(t("cars_count", { n: cars.length }))}</span>
-          <select id="sort">${[["score", t("sort_score")], ["new", t("sort_new")], ["price", t("sort_price")], ["dist", t("sort_dist")], ["km", t("sort_km")]].map(([k, l]) => `<option value="${k}"${st.sort === k ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+          <select id="sort">${[["offer", t("sort_offer")], ["score", t("sort_score")], ["new", t("sort_new")], ["price", t("sort_price")], ["dist", t("sort_dist")], ["km", t("sort_km")]].map(([k, l]) => `<option value="${k}"${st.sort === k ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
       </header>
       <main class="content">${S.mode === "demo" ? `<div class="demo-banner">${esc(t("demo_mode"))} · ${esc(me().name)}</div>` : ""}
-        <div id="list">${cars.length ? cars.map(cardHtml).join("") : `<div class="empty-state">—</div>`}</div></main>`;
+        <div id="list">${cars.length ? cars.map((c, i) => cardHtml(c, i)).join("") : `<div class="empty-state">—</div>`}</div></main>`;
     const q = view.querySelector("#q");
-    q.oninput = () => { st.q = q.value; const l = visibleCars(); view.querySelector("#list").innerHTML = l.map(cardHtml).join("") || `<div class="empty-state">—</div>`; view.querySelector(".sortrow span").textContent = t("cars_count", { n: l.length }); };
-    view.querySelector("#sort").onchange = (e) => { st.sort = e.target.value; localStorage.setItem("g2-sort", st.sort); renderCars(); };
+    q.oninput = () => { st.q = q.value; const l = visibleCars(); view.querySelector("#list").innerHTML = l.map((c, i) => cardHtml(c, i)).join("") || `<div class="empty-state">—</div>`; view.querySelector(".sortrow span").textContent = t("cars_count", { n: l.length }); };
+    view.querySelector("#sort").onchange = (e) => { st.sort = e.target.value; localStorage.setItem("g2-sort2", st.sort); renderCars(); };
+    view.querySelectorAll("[data-rw]").forEach(b => b.onclick = () => { st.rateWho = b.dataset.rw; renderCars(); });
+    view.querySelectorAll("[data-rv]").forEach(b => b.onclick = () => { st.rateVal = b.dataset.rv; renderCars(); });
     view.querySelector("#filterbtn").onclick = openFilters;
     view.querySelectorAll("[data-pl]").forEach(b => b.onclick = () => { st.playlist = b.dataset.pl; localStorage.setItem("g2-playlist", st.playlist); renderCars(); window.scrollTo(0, 0); });
     view.querySelector("#list").onclick = (e) => { const a = e.target.closest(".card"); if (a) openDetail(a.dataset.id); };
@@ -280,9 +313,9 @@
     const draw = (el) => {
       el.innerHTML = `<div class="grab"></div><h2>${esc(t("filters"))}</h2>
         <div class="field"><span>${esc(t("radius"))}</span><div class="seg" data-k="radius">
-          <button data-v="a" class="${f.radius === "a" ? "on" : ""}">${esc(t("radius_a"))}</button><button data-v="ab" class="${f.radius === "ab" ? "on" : ""}">${esc(t("radius_ab"))}</button></div></div>
+          <button data-v="a" class="${f.radius === "a" ? "on" : ""}">${esc(t("radius_a"))}</button><button data-v="ab" class="${f.radius === "ab" ? "on" : ""}">${esc(t("radius_ab"))}</button><button data-v="all" class="${f.radius === "all" ? "on" : ""}">${esc(t("radius_all"))}</button></div></div>
         <div class="field"><span>${esc(t("max_price"))}: <b class="num" id="pv">${esc(fmtPrice(f.maxPrice))}</b></span>
-          <div class="range-row"><input type="range" min="1000" max="4000" step="250" value="${f.maxPrice}" id="pr"></div></div>
+          <div class="range-row"><input type="range" min="1000" max="5000" step="250" value="${f.maxPrice}" id="pr"></div></div>
         <div class="field"><span>${esc(t("tuv"))}</span><div class="seg" data-k="tuv">
           <button data-v="any" class="${f.tuv === "any" ? "on" : ""}">${esc(t("tuv_any"))}</button><button data-v="valid" class="${f.tuv === "valid" ? "on" : ""}">${esc(t("tuv_valid"))}</button><button data-v="12" class="${f.tuv === "12" ? "on" : ""}">${esc(t("tuv_12"))}</button></div></div>
         <div class="field"><span>${esc(t("source"))}</span><div class="seg" data-k="source">
@@ -294,7 +327,7 @@
       el.querySelectorAll("[data-sw]").forEach(b => b.onclick = () => { f[b.dataset.sw] = !f[b.dataset.sw]; draw(el); });
       const pr = el.querySelector("#pr"); pr.oninput = () => { f.maxPrice = Number(pr.value); el.querySelector("#pv").textContent = fmtPrice(f.maxPrice); };
       el.querySelector("#fr").onclick = () => { Object.assign(f, DEFAULT_FILTERS); draw(el); };
-      el.querySelector("#fa").onclick = () => { st.filters = f; localStorage.setItem("g2-filters", JSON.stringify(f)); $sheet.innerHTML = ""; renderCars(); };
+      el.querySelector("#fa").onclick = () => { st.filters = f; localStorage.setItem("g2-filters2", JSON.stringify(f)); $sheet.innerHTML = ""; render(); };
     };
     sheet("", (el) => draw(el));
   }
@@ -331,7 +364,7 @@
     if (el) el.remove();
     st.detail = null;
     if (!fromPop && history.state && history.state.detail) history.back();
-    if (st.tab === "cars") renderCars(); else if (st.tab === "feed") renderFeed();
+    if (st.tab === "cars") renderCars(); else if (st.tab === "feed") renderFeed(); else if (st.tab === "foryou") { const y = window.scrollY; renderForYou(); window.scrollTo(0, y); }
   }
   window.addEventListener("popstate", () => { if (st.detail) closeDetail(true); });
 
@@ -368,7 +401,11 @@
         ${isGone(c) ? `<div class="d-status">${esc(t("st_deleted"))}${c.deleted_at ? " · " + esc(fmtDate(c.deleted_at, true)) : ""}</div>` : c.status === "reserved" ? `<div class="d-status" style="color:var(--warn);background:rgba(251,191,36,.12)">${esc(t("st_reserved"))}</div>` : ""}
         ${(c.also_on || []).length ? `<div class="tags" style="margin-top:8px">${c.also_on.map(a => safeUrl(a.url) ? `<a class="tag" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(t("also_on"))} ${esc(a.source)}${a.price ? " · " + esc(fmtPrice(a.price)) : ""} ↗</a>` : "").join("")}</div>` : ""}
         ${!c.eligible && (c.exclude_reasons || []).length ? `<div class="excluded">${esc(t("excluded"))}: ${esc(c.exclude_reasons.join(", "))}</div>` : ""}
+        ${c.expected_price ? `<div class="market"><div><small>${esc(t("market_value"))}</small><b class="num">≈ ${esc(fmtPrice(c.expected_price))}</b></div>
+          <div>${dealHtml(c)}</div><div><small>${esc(t("offer_score"))}</small><b class="num">${esc(c.offer_score ?? "–")}</b></div></div>` : ""}
         <div class="tags" style="margin-top:10px">${tagsHtml(c)}</div>
+        ${canWrite() && myImpression(c.id) != null ? `<div class="imp-line">${esc(t("your_impression"))}: <b>${esc(t({ "-1": "imp_no", "1": "imp_yes", "2": "imp_top" }[myImpression(c.id)]))}</b>
+          <button class="linkbtn" id="impclear" style="margin:0 0 0 8px;font-size:13px">${esc(t("reset"))}</button></div>` : ""}
 
         <section class="box"><h3>${esc(canWrite() ? t("my_rating") : t("ratings"))}</h3>
           ${canWrite() ? `<div class="rate-row">${[5, 4, 3, 2, 1].map(r => `<button class="rate-btn${myR === r ? " on" : ""}" data-rate="${r}" style="${myR === r ? "color:" + RATING_COLOR[r] : ""}"><i style="background:${RATING_COLOR[r]}"></i>${esc(t("r" + r))}</button>`).join("")}</div>` : ""}
@@ -426,6 +463,7 @@
     const cf = el.querySelector("#cform"); if (cf) cf.onsubmit = (e) => { e.preventDefault(); const v = el.querySelector("#ctext").value.trim(); if (v) addComment(c.id, v); };
     el.querySelectorAll("[data-delc]").forEach(b => b.onclick = () => delComment(Number(b.dataset.delc)));
     const dm = el.querySelector("#dmore"); if (dm) dm.onclick = () => { st.detail.descOpen = !st.detail.descOpen; drawDetail(true); };
+    const ic = el.querySelector("#impclear"); if (ic) ic.onclick = () => impress(c.id, null).then(() => drawDetail(true));
     const ar = el.querySelector("#arch"); if (ar) ar.onclick = () => archive(c.id, !c.archived);
     const sh = el.querySelector("#share"); if (sh) sh.onclick = () => navigator.share({ title: carTitle(c), url }).catch(() => { });
   }
@@ -486,35 +524,167 @@
     });
   }
 
-  // ---------------- Swipen ----------------
-  function buildSwipeQueue() {
-    st.swipeQueue = st.data.cars.filter(c => inBase(c, "unrated") && myRating(c.id) == null)
-      .sort((a, b) => combinedScore(b) - combinedScore(a)).map(c => c.id);
+  // ---------------- Geschmacks-Modell ("Für dich") ----------------
+  // Lernt aus Eindrücken (Swipen) und Bewertungen, welche Merkmale dir gefallen.
+  // Merkmale: Motor, Baureihe, Karosserie, Preisband, km-Band, Umkreis, Marke, Zustand-Labels.
+  const IMP_WEIGHT = { "-1": -1, "1": 1, "2": 2 };
+  const PRIOR = { M54B30: 0.35, M57: 0.28, M43: 0.18, M54B25: 0.14, M54B22: 0.05, M47: -0.02, VW16: -0.08, VW18T: -0.04 };
+  const RATE_WEIGHT = { 5: 2.5, 4: 1.5, 3: 0.3, 2: -1, 1: -2 };
+  function bodyClass(c) {
+    const b = `${c.body || ""} ${c.title || ""}`.toLowerCase();
+    if (/compact|kompakt|\b31[68]ti\b|\b325ti\b/.test(b)) return "compact";
+    if (/touring|kombi|variant|avant|combi/.test(b)) return "touring";
+    if (/cabrio/.test(b)) return "cabrio";
+    if (/coup/.test(b)) return "coupe";
+    return "limo";
   }
+  function features(c) {
+    const f = [];
+    if (c.engine_group) f.push("g:" + c.engine_group);
+    if (c.series) f.push("s:" + c.series);
+    f.push("b:" + bodyClass(c));
+    const p = c.price_eur;
+    if (p != null) f.push("p:" + (p <= 2000 ? "lo" : p <= 3000 ? "mid" : p <= 4000 ? "hi" : "xhi"));
+    const km = c.mileage_km;
+    if (km != null) f.push("k:" + (km < 180000 ? "lo" : km < 260000 ? "mid" : "hi"));
+    if (c.zone) f.push("z:" + c.zone);
+    if (c.make) f.push("m:" + c.make.toLowerCase());
+    (c.auto_labels || []).forEach(l => { if (l.tone === "bad" || l.tone === "good" || l.key === "abgemeldet") f.push("l:" + l.key + ":" + l.tone); });
+    return f;
+  }
+  function prefModel(uid) {
+    const signal = {};
+    const add = (id, v) => { signal[id] = (signal[id] || 0) + v; };
+    st.data.impressions.forEach(i => { if (i.user_id === uid) add(i.car_id, IMP_WEIGHT[i.value] || 0); });
+    st.data.ratings.forEach(r => add(r.car_id, (RATE_WEIGHT[r.rating] || 0) * (r.user_id === uid ? 1 : 0.3)));
+    const sum = {}, n = {};
+    for (const id in signal) {
+      const c = st.idx.car[id]; if (!c) continue;
+      features(c).forEach(k => { sum[k] = (sum[k] || 0) + signal[id]; n[k] = (n[k] || 0) + 1; });
+    }
+    const w = {};
+    for (const k in sum) w[k] = sum[k] / (n[k] + 3);   // geglättet: wenige Signale zählen wenig
+    return { w, count: Object.keys(signal).length };
+  }
+  function affinity(c, model) {
+    let a = 0; const parts = [];
+    features(c).forEach(k => { const v = model.w[k] || 0; a += v; if (v > 0.15) parts.push([k, v]); });
+    parts.sort((x, y) => y[1] - x[1]);
+    return { a, top: parts.slice(0, 2).map(p => p[0]) };
+  }
+  const offerOf = (c) => c.offer_score ?? c.score ?? 50;
+  function reasonText(c, top) {
+    const out = [];
+    top.forEach(k => {
+      const [kind, val] = k.split(":");
+      if (kind === "g") out.push(t("why_engine", { x: t("group_" + val) !== "group_" + val ? t("group_" + val) : val }));
+      else if (kind === "s") out.push(val);
+      else if (kind === "b") out.push(t("body_" + val));
+      else if (kind === "p") out.push(t("why_price_" + val));
+      else if (kind === "z") out.push(val === "A" ? t("why_near") : "");
+      else if (kind === "m") out.push(val.toUpperCase() === "BMW" ? "BMW" : val);
+    });
+    const r = out.filter(Boolean);
+    return r.slice(0, 3).join(" · ");
+  }
+  function rng(seed) { // Mulberry32: reproduzierbarer Zufall je "Mischung"
+    let a = seed >>> 0;
+    return () => { a = (a + 0x6D2B79F5) >>> 0; let x = Math.imul(a ^ (a >>> 15), 1 | a); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+  }
+  function forYouList() {
+    const uid = me().user_id;
+    const model = prefModel(uid);
+    const rand = rng(st.fySeed);
+    const learned = Math.min(1, model.count / 25);            // je mehr Signale, desto mehr zählt der Geschmack
+    const out = [];
+    st.data.cars.forEach(c => {
+      if (!inBase(c, "all") || c.severe) return;
+      const myR = myRating(c.id), imp = myImpression(c.id);
+      if (myR != null && myR <= 2) return;
+      const af = affinity(c, model);
+      // Vorwissen: deine Motor-Prioritäten zählen, solange noch wenig gelernt ist
+      const prior = PRIOR[c.engine_group] ?? -0.1;
+      let w = offerOf(c) / 100 + (1 - learned * 0.6) * prior + learned * 0.55 * Math.tanh(af.a) + (isNew(c) ? 0.12 : 0);
+      if (myR != null && myR >= 4) w -= 0.25;                   // kennst du schon
+      if (imp === -1) w -= 0.35;
+      if (imp === 2) w += 0.15;
+      const u = Math.max(1e-9, rand());
+      const key = w + 0.13 * -Math.log(-Math.log(u));          // Gumbel-Rauschen = gewichteter Zufall
+      out.push({ c, key, why: reasonText(c, af.top) });
+    });
+    return out.sort((a, b) => b.key - a.key);
+  }
+  function renderForYou() {
+    const view = document.getElementById("view");
+    const list = forYouList();
+    const shown = list.slice(0, st.fyCount);
+    const model = canWrite() ? prefModel(me().user_id) : { count: 0 };
+    view.innerHTML = `<header class="top"><div class="top-row"><div class="brand">GARAGE<span>/</span>02</div>
+        <button class="btn btn-sm" id="shuffle" style="margin-inline-start:auto">↻ ${esc(t("reshuffle"))}</button></div>
+        <div class="fy-sub">${esc(canWrite() ? (model.count < 10 ? t("fy_learning", { n: model.count }) : t("fy_learned", { n: model.count })) : t("fy_readonly"))}</div></header>
+      <main class="content">
+        ${shown.map(({ c, why }) => fyCardHtml(c, why)).join("") || `<div class="empty-state">—</div>`}
+        ${list.length > shown.length ? `<button class="btn btn-block" id="fymore">${esc(t("show_more"))}</button>` : ""}
+      </main>`;
+    view.querySelector("#shuffle").onclick = () => { st.fySeed = (Math.random() * 1e9) | 0; st.fyCount = 20; renderForYou(); window.scrollTo(0, 0); };
+    const more = view.querySelector("#fymore"); if (more) more.onclick = () => { st.fyCount += 20; const y = window.scrollY; renderForYou(); window.scrollTo(0, y); };
+    view.querySelectorAll(".fy-card").forEach(el => el.onclick = () => openDetail(el.dataset.id));
+  }
+  function dealHtml(c) {
+    if (c.deal_pct == null || !c.expected_price || c.price_eur == null) return "";
+    const diff = c.expected_price - c.price_eur;
+    if (Math.abs(c.deal_pct) < 0.08) return `<span class="deal neutral">${esc(t("deal_fair"))}</span>`;
+    return diff > 0 ? `<span class="deal good">${esc(t("deal_below", { n: fmtNum(diff) }))}</span>`
+      : `<span class="deal bad">${esc(t("deal_above", { n: fmtNum(-diff) }))}</span>`;
+  }
+  function fyCardHtml(c, why) {
+    const imgs = (c.images || []).map(safeUrl).filter(Boolean);
+    return `<article class="fy-card" data-id="${esc(c.id)}">
+      <div class="fy-photo">${imgs[0] ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(imgs[0])}" alt="">` : ""}
+        <div class="raters">${raterDots(c)}</div>
+        <div class="fy-grad"></div>
+        <div class="fy-info"><h3>${esc(carTitle(c))}</h3>
+          <div class="row"><b class="num">${esc(fmtPrice(c.price_eur))}</b>${engineChip(c)}<span class="num">${esc(fmtKm(c.mileage_km))}</span><span class="num">${esc(c.year || "")}</span><span class="num">${c.dist_km != null ? esc(c.dist_km + " km") : ""}</span></div></div></div>
+      <div class="fy-bottom">${why ? `<div class="fy-why">✦ ${esc(why)}</div>` : ""}
+        <div class="tags">${dealHtml(c)}${tagsHtml(c, 5)}</div></div></article>`;
+  }
+
+  // ---------------- Eindruck (Swipen) ----------------
+  // Kein Urteil, nur ein erster Eindruck – trainiert "Für dich". Bewerten bleibt in der Detailansicht.
+  const myImpression = (id) => { const r = (st.idx.imp[id] || {})[me().user_id]; return r ? r.value : null; };
+  function buildSwipeQueue() {
+    const model = prefModel(me().user_id);
+    const rand = rng((Math.random() * 1e9) | 0);
+    st.swipeQueue = st.data.cars.filter(c => inBase(c, "unrated") && myRating(c.id) == null && myImpression(c.id) == null)
+      .map(c => ({ id: c.id, k: offerOf(c) / 100 + (PRIOR[c.engine_group] ?? -0.1) + 0.4 * Math.tanh(affinity(c, model).a) + 0.25 * -Math.log(-Math.log(Math.max(1e-9, rand()))) }))
+      .sort((a, b) => b.k - a.k).map(x => x.id);
+  }
+  function pendingSwipe() { return st.swipeQueue.filter(id => myRating(id) == null && myImpression(id) == null && !st.skipped.has(id)); }
   function renderSwipe() {
     if (!st.swipeQueue) buildSwipeQueue();
     const view = document.getElementById("view");
-    const ids = st.swipeQueue.filter(id => myRating(id) == null).slice(0, 2);
+    const ids = pendingSwipe().slice(0, 2);
+    const done = st.data.impressions.filter(i => i.user_id === me().user_id).length;
     view.innerHTML = `<header class="top"><div class="top-row"><div class="brand">GARAGE<span>/</span>02</div>
-        <div class="top-meta">${esc(t("unrated"))}: ${st.swipeQueue.filter(id => myRating(id) == null).length}</div></div></header>
+        <div class="top-meta">${esc(t("imp_count", { n: done }))}</div></div>
+        <div class="fy-sub">${esc(t("imp_hint"))}</div></header>
       <main class="content" style="padding-bottom:0">
         ${ids.length ? `<div class="swipe-wrap">${ids.slice().reverse().map((id, i) => swipeCardHtml(st.idx.car[id], i === 0 && ids.length > 1)).join("")}</div>
         <div class="swipe-buttons">
-          <button class="sbtn" data-r="1" style="color:var(--r1)">✕</button>
-          <button class="sbtn small" data-r="2" style="color:var(--r2)">!</button>
-          <button class="sbtn small" data-r="3" style="color:var(--r3)">?</button>
-          <button class="sbtn" data-r="4" style="color:var(--r4)">✓</button>
-          <button class="sbtn small" data-r="5" style="color:var(--r5)">★</button>
+          <button class="sbtn" data-v="-1" style="color:var(--r1)" aria-label="${esc(t("imp_no"))}">👎</button>
+          <button class="sbtn small" data-v="skip" style="color:var(--muted)" aria-label="${esc(t("imp_skip"))}">⏭</button>
+          <button class="sbtn" data-v="1" style="color:var(--r4)" aria-label="${esc(t("imp_yes"))}">👍</button>
+          <button class="sbtn small" data-v="2" style="color:var(--r5)" aria-label="${esc(t("imp_top"))}">🔥</button>
           <button class="sbtn small" id="undo" style="color:var(--muted)" ${st.undo.length ? "" : "disabled"} aria-label="${esc(t("undo"))}">↶</button>
         </div><div class="swipe-hint">${esc(t("swipe_hint"))}</div>` : `<div class="empty-state">${esc(t("swipe_empty"))}</div>`}
       </main>`;
     if (!ids.length) return;
     const top = view.querySelector(".swipe-card:last-child");
     attachSwipe(top, ids[0]);
-    view.querySelectorAll("[data-r]").forEach(b => b.onclick = () => commitSwipe(ids[0], Number(b.dataset.r), top));
+    view.querySelectorAll("[data-v]").forEach(b => b.onclick = () => commitSwipe(ids[0], b.dataset.v === "skip" ? "skip" : Number(b.dataset.v), top));
     view.querySelector("#undo").onclick = async () => {
       const u = st.undo.pop(); if (!u) return;
-      await rate(u.id, u.prev);
+      if (u.skip) st.skipped.delete(u.id); else await impress(u.id, u.prev);
       st.swipeQueue = st.swipeQueue.filter(x => x !== u.id); st.swipeQueue.unshift(u.id);
       renderSwipe();
     };
@@ -529,9 +699,9 @@
         <div class="info"><h2>${esc(carTitle(c))}</h2>
           <div class="row"><b class="num" style="font-size:19px">${esc(fmtPrice(c.price_eur))}</b>${d < 0 ? `<span class="down num">↓ ${esc(fmtNum(-d))} €</span>` : ""}
             ${engineChip(c)}<span class="num">${esc(fmtKm(c.mileage_km))}</span><span class="num">${esc(c.year || "")}</span><span class="num">${c.dist_km != null ? esc(c.dist_km + " km") : ""}</span></div></div>
-        <div class="stamp-big yes">${esc(t("r4"))}</div><div class="stamp-big no">${esc(t("r1"))}</div><div class="stamp-big top">${esc(t("r5"))}</div>
+        <div class="stamp-big yes">${esc(t("imp_yes"))}</div><div class="stamp-big no">${esc(t("imp_no"))}</div><div class="stamp-big top">${esc(t("imp_top"))}</div>
       </div>
-      <div class="swipe-bottom"><div class="tags">${tagsHtml(c, 7)}</div>
+      <div class="swipe-bottom"><div class="tags">${dealHtml(c)}${tagsHtml(c, 6)}</div>
         <div class="snip">${esc((c.title || "").slice(0, 140))}</div></div></div>`;
   }
   function attachSwipe(card, id) {
@@ -556,7 +726,6 @@
       card.style.transition = "transform .25s ease";
       const ddx = rtl ? -dx : dx;
       if (!moved) {
-        // Tippen: linke/rechte Bildhälfte blättert, unten öffnet Details
         const r = card.getBoundingClientRect();
         if (e.clientY - r.top > r.height * 0.68) { openDetail(id); }
         else if (imgs.length > 1) {
@@ -568,26 +737,35 @@
         }
         card.style.transform = ""; return;
       }
-      if (ddx > 110) commitSwipe(id, 4, card);
-      else if (ddx < -110) commitSwipe(id, 1, card);
-      else if (dy < -120 && Math.abs(dx) < 80) commitSwipe(id, 5, card);
+      if (ddx > 110) commitSwipe(id, 1, card);
+      else if (ddx < -110) commitSwipe(id, -1, card);
+      else if (dy < -120 && Math.abs(dx) < 80) commitSwipe(id, 2, card);
       else { card.style.transform = ""; yes.style.opacity = no.style.opacity = topS.style.opacity = 0; }
       dx = dy = 0;
     };
     card.addEventListener("pointerup", end);
     card.addEventListener("pointercancel", end);
   }
-  async function commitSwipe(id, r, card) {
+  async function impress(carId, value) {
+    const uid = me().user_id;
+    const prev = myImpression(carId);
+    st.data.impressions = st.data.impressions.filter(i => !(i.car_id === carId && i.user_id === uid));
+    if (value != null) st.data.impressions.push({ car_id: carId, user_id: uid, value, at: new Date().toISOString() });
+    buildIndex();
+    try { await S.setImpression(carId, value); } catch (e) { fail(e); }
+    return prev;
+  }
+  async function commitSwipe(id, v, card) {
     const rtl = document.documentElement.dir === "rtl";
     if (card) {
       card.style.transition = "transform .28s ease, opacity .28s";
-      const dir = r >= 4 ? 1 : r <= 2 ? -1 : 0;
-      card.style.transform = r === 5 ? "translateY(-120%)" : dir ? `translateX(${(rtl ? -dir : dir) * 140}%) rotate(${dir * 18}deg)` : "scale(.85)";
+      const dir = v === "skip" ? 0 : v > 0 ? 1 : -1;
+      card.style.transform = v === 2 ? "translateY(-120%)" : dir ? `translateX(${(rtl ? -dir : dir) * 140}%) rotate(${dir * 18}deg)` : "scale(.85)";
       card.style.opacity = "0";
     }
-    const prev = await rate(id, r);
-    st.undo.push({ id, prev });
-    if (st.undo.length > 20) st.undo.shift();
+    if (v === "skip") { st.skipped.add(id); st.undo.push({ id, skip: true }); }
+    else { const prev = await impress(id, v); st.undo.push({ id, prev }); }
+    if (st.undo.length > 30) st.undo.shift();
     setTimeout(renderSwipe, 240);
   }
 

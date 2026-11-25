@@ -4,7 +4,7 @@
   const LIST_COLS = "id,source,url,status,eligible,severe,title,make,model,series,variant,body,engine_code,engine_group," +
     "engine_confidence,engine_note,power_hp,displacement_ccm,fuel,transmission,first_reg,year,mileage_km,price_eur,price_type,hu," +
     "seller_type,location_text,zip,dist_km,zone,images,auto_labels,exclude_reasons,score,price_history,first_seen,last_checked," +
-    "deleted_at,manual,archived,legacy,updated_at,dup_of,also_on";
+    "deleted_at,manual,archived,legacy,updated_at,dup_of,also_on,expected_price,deal_pct,offer_score";
 
   function lsGet(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } }
@@ -48,7 +48,7 @@
     }
 
     S.loadAll = async () => {
-      const [cars, ratings, labels, carLabels, comments, events, runs] = await Promise.all([
+      const [cars, ratings, labels, carLabels, comments, events, runs, impressions] = await Promise.all([
         all("cars", LIST_COLS),
         all("ratings", "car_id,user_id,rating,updated_at"),
         all("labels", "*", { order: "created_at", asc: true }),
@@ -56,8 +56,9 @@
         all("comments", "id,car_id,user_id,body,created_at", { order: "created_at", asc: true }),
         all("events", "id,car_id,kind,old,new,at", { order: "at", limit: 400 }),
         all("job_runs", "*", { order: "finished_at", limit: 5 }),
+        all("impressions", "car_id,user_id,value,at").catch(() => []),
       ]);
-      const res = { cars, ratings, labels, carLabels, comments, events, runs };
+      const res = { cars, ratings, labels, carLabels, comments, events, runs, impressions };
       lsSet("garage02-cache", { at: Date.now(), res, me: S.me, members: S.members });
       return res;
     };
@@ -93,6 +94,15 @@
       if (error) throw error; return data;
     };
     S.deleteComment = async (id) => { const { error } = await sb.from("comments").delete().eq("id", id); if (error) throw error; };
+    S.setImpression = async (carId, value) => {
+      if (value == null) {
+        const { error } = await sb.from("impressions").delete().eq("car_id", carId).eq("user_id", S.me.user_id);
+        if (error) throw error;
+      } else {
+        const { error } = await sb.from("impressions").upsert({ car_id: carId, user_id: S.me.user_id, value, at: new Date().toISOString() });
+        if (error) throw error;
+      }
+    };
     S.setArchived = async (carId, archived) => { const { error } = await sb.from("cars").update({ archived }).eq("id", carId); if (error) throw error; };
     S.submitLink = async (url, note) => { const { error } = await sb.from("submissions").insert({ url, note }); if (error) throw error; };
     S.listSubmissions = async () => (await sb.from("submissions").select("*").order("created_at", { ascending: false }).limit(30)).data || [];
@@ -100,7 +110,7 @@
 
     S.subscribe = (onChange) => {
       const ch = sb.channel("garage02");
-      ["ratings", "car_labels", "labels", "comments", "cars", "events", "submissions"].forEach(t =>
+      ["ratings", "car_labels", "labels", "comments", "cars", "events", "submissions", "impressions"].forEach(t =>
         ch.on("postgres_changes", { event: "*", schema: "public", table: t }, (p) => onChange(t, p)));
       ch.subscribe();
       return () => sb.removeChannel(ch);
@@ -120,6 +130,7 @@
     ];
     const S = { mode: "demo", members, me: members.find(m => m.role === as) || members[0] };
     const st = lsGet("demo-state", { ratings: [], labels: [], carLabels: [], comments: [], archived: {}, subs: [], seq: 1 });
+    st.impressions = st.impressions || [];
     const save = () => lsSet("demo-state", st);
     let base = null;
     S.session = async () => ({ user: { id: S.me.user_id } });
@@ -130,7 +141,7 @@
       if (!base) base = await (await fetch("demo-data.json", { cache: "no-store" })).json();
       const cars = base.cars.map(c => ({ ...c, description: undefined, archived: !!st.archived[c.id] }));
       const events = (base.events || []).map((e, i) => ({ ...e, id: i + 1 }));
-      return { cars, ratings: st.ratings, labels: st.labels, carLabels: st.carLabels, comments: st.comments, events,
+      return { cars, ratings: st.ratings, impressions: st.impressions, labels: st.labels, carLabels: st.carLabels, comments: st.comments, events,
         runs: [{ finished_at: base.exported_at, stats: {} }] };
     };
     S.cached = () => null;
@@ -151,6 +162,11 @@
     S.addComment = async (carId, body) => { const c = { id: st.seq++, car_id: carId, user_id: S.me.user_id, body, created_at: new Date().toISOString() }; st.comments.push(c); save(); return c; };
     S.deleteComment = async (id) => { st.comments = st.comments.filter(c => c.id !== id); save(); };
     S.setArchived = async (carId, a) => { st.archived[carId] = a; save(); };
+    S.setImpression = async (carId, value) => {
+      st.impressions = st.impressions.filter(r => !(r.car_id === carId && r.user_id === S.me.user_id));
+      if (value != null) st.impressions.push({ car_id: carId, user_id: S.me.user_id, value, at: new Date().toISOString() });
+      save();
+    };
     S.submitLink = async (url, note) => { st.subs.unshift({ id: st.seq++, url, note, status: "pending", created_at: new Date().toISOString() }); save(); };
     S.listSubmissions = async () => st.subs;
     S.updateMe = async (patch) => { Object.assign(S.me, patch); if (patch.lang) lsSet("demo-lang-" + S.me.role, patch.lang); };
@@ -158,5 +174,6 @@
     return S;
   }
 
-  window.Store = (cfg.supabaseUrl && cfg.supabaseAnonKey) ? SupabaseStore() : DemoStore();
+  const forceDemo = new URLSearchParams(location.search).has("demo");
+  window.Store = (cfg.supabaseUrl && cfg.supabaseAnonKey && !forceDemo) ? SupabaseStore() : DemoStore();
 })();
