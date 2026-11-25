@@ -80,6 +80,7 @@
     d.carLabels.forEach(x => { (idx.carLabels[x.car_id] = idx.carLabels[x.car_id] || []).push(x.label_id); });
     d.comments.forEach(c => { (idx.comments[c.car_id] = idx.comments[c.car_id] || []).push(c); });
     d.events.forEach(e => { (idx.events[e.car_id] = idx.events[e.car_id] || []).push(e); });
+    applyDupMarks(d, idx);
     // Schwellen für "weit weg, aber Top-Angebot": relativ zum aktuellen Angebot,
     // 150–300 km ab den besten 6 %, über 300 km nur die besten 2 %
     // Maßstab ist der Passt-Score (Motor, Preis, km, TÜV) – nicht der reine Preisvorteil, sonst rutschen Billig-Bastler rein
@@ -88,6 +89,27 @@
     const q = (p) => sc.length ? sc[Math.min(sc.length - 1, Math.floor(p * sc.length))] : 999;
     idx.tB = q(0.94); idx.tC = q(0.98);
     st.idx = idx;
+  }
+  // Von Hand gemeldete Duplikate anwenden: das "schwächere" Inserat wird unter dem Haupt-Auto einsortiert
+  // (wie bei den automatisch erkannten Dubletten des Suchlaufs). Haupt-Auto = mehr Bewertungen/Labels/Notizen, sonst das ältere.
+  function applyDupMarks(d, idx) {
+    d.cars.forEach(c => {
+      if (!c._o) c._o = { dup_of: c.dup_of || null, also_on: c.also_on || [] };
+      c.dup_of = c._o.dup_of; c.also_on = c._o.also_on.slice(); c._mark = null;
+    });
+    const rootOf = (c) => { let x = c, n = 0; while (x && x.dup_of && idx.car[x.dup_of] && n++ < 10) x = idx.car[x.dup_of]; return x; };
+    const weight = (c) => Object.keys(idx.ratings[c.id] || {}).length * 3 + (idx.carLabels[c.id] || []).length * 2 + (idx.comments[c.id] || []).length;
+    (d.dupMarks || []).forEach(m => {
+      const a = idx.car[m.car_id], b = idx.car[m.dup_id];
+      if (!a || !b) return;
+      const ra = rootOf(a), rb = rootOf(b);
+      if (ra === rb) return;
+      const keepA = weight(ra) !== weight(rb) ? weight(ra) > weight(rb) : (ra.first_seen || "") <= (rb.first_seen || "");
+      const main = keepA ? ra : rb, other = keepA ? rb : ra;
+      other.dup_of = main.id; other._mark = m;
+      main.also_on = main.also_on.concat([{ source: other.source, url: other.url, price: other.price_eur, id: other.id, mark: m }],
+        (other.also_on || []).filter(x => x.url !== main.url));
+    });
   }
   const zoneOf = (c) => c.zone || "B";   // ohne Entfernung: wie 150–300 behandeln
   function inRadius(c, mode = st.radius) {
@@ -440,11 +462,12 @@
         <div class="d-pricerow"><div class="d-price num">${esc(fmtPrice(c.price_eur))}${c.price_type === "VB" ? ' <small style="font-size:15px;color:var(--muted)">VB</small>' : ""}</div>
           ${d ? `<div class="d-pricehist ${d < 0 ? "down" : "up"}">${d < 0 ? "↓" : "↑"} ${esc(fmtNum(Math.abs(d)))} € · ${esc(ph.map(p => fmtNum(p[1])).join(" → "))}</div>` : ""}</div>
         ${isGone(c) ? `<div class="d-status">${esc(t("st_deleted"))}${c.deleted_at ? " · " + esc(fmtDate(c.deleted_at, true)) : ""}</div>` : c.status === "reserved" ? `<div class="d-status" style="color:var(--warn);background:rgba(251,191,36,.12)">${esc(t("st_reserved"))}</div>` : ""}
-        ${(c.also_on || []).length ? `<div class="tags" style="margin-top:8px">${c.also_on.map(a => safeUrl(a.url) ? `<a class="tag" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(t("also_on"))} ${esc(a.source)}${a.price ? " · " + esc(fmtPrice(a.price)) : ""} ↗</a>` : "").join("")}</div>` : ""}
+        ${sameCarHtml(c)}
         ${!c.eligible && (c.exclude_reasons || []).length ? `<div class="excluded">${esc(t("excluded"))}: ${esc(c.exclude_reasons.join(", "))}</div>` : ""}
         ${c.expected_price ? `<div class="market"><div><small>${esc(t("market_value"))}</small><b class="num">≈ ${esc(fmtPrice(c.expected_price))}</b></div>
           <div>${dealHtml(c, true)}</div><div><small>${esc(t("offer_score"))}</small><b class="num">${esc(c.offer_score ?? "–")}</b></div></div>` : ""}
         <div class="tags" style="margin-top:10px">${tagsHtml(c)}</div>
+        ${canWrite() ? `<button class="linkbtn dupbtn" id="dupbtn">⧉ ${esc(t("dup_report"))}</button>` : ""}
         ${canWrite() && myImpression(c.id) != null ? `<div class="imp-line">${esc(t("your_impression"))}: <b>${esc(t({ "-1": "imp_no", "1": "imp_yes", "2": "imp_top" }[myImpression(c.id)]))}</b>
           <button class="linkbtn" id="impclear" style="margin:0 0 0 8px;font-size:13px">${esc(t("reset"))}</button></div>` : ""}
 
@@ -482,7 +505,7 @@
         <section class="box"><h3>${esc(t("description"))}</h3>
           ${x.description == null ? `<div class="desc" style="color:var(--muted)">…</div>` :
             `<div class="desc${st.detail.descOpen ? "" : " clamp"}" id="desc">${highlight(x.description || "–")}</div>
-             ${(x.description || "").length > 380 ? `<button class="linkbtn" id="dmore">${esc(st.detail.descOpen ? t("show_less") : t("show_more"))}</button>` : ""}`}
+             <button class="linkbtn" id="dmore" hidden>${esc(st.detail.descOpen ? t("show_less") : t("show_more"))}</button>`}
         </section>
 
         ${legacy ? `<section class="box"><h3>${esc(t("legacy"))}</h3><div class="desc">${esc([legacy.known_issues, legacy.notes, legacy.open_questions, legacy.research_assessment].filter(Boolean).join("\n\n"))}</div></section>` : ""}
@@ -503,10 +526,146 @@
     const nl = el.querySelector("#newlab"); if (nl) nl.onclick = () => labelEditor(null, (l) => toggleLabel(c.id, l.id, true));
     const cf = el.querySelector("#cform"); if (cf) cf.onsubmit = (e) => { e.preventDefault(); const v = el.querySelector("#ctext").value.trim(); if (v) addComment(c.id, v); };
     el.querySelectorAll("[data-delc]").forEach(b => b.onclick = () => delComment(Number(b.dataset.delc)));
-    const dm = el.querySelector("#dmore"); if (dm) dm.onclick = () => { st.detail.descOpen = !st.detail.descOpen; drawDetail(true); };
+    // Beschreibung nur kürzen (mit Verlauf + "Mehr anzeigen"), wenn sie wirklich länger als die Box ist
+    const dm = el.querySelector("#dmore"), desc = el.querySelector("#desc");
+    if (dm && desc) {
+      const overflows = desc.scrollHeight > desc.clientHeight + 4;
+      if (!st.detail.descOpen && !overflows) desc.classList.remove("clamp");
+      dm.hidden = !(overflows || st.detail.descOpen);
+      dm.onclick = () => { st.detail.descOpen = !st.detail.descOpen; drawDetail(true); };
+    }
+    const db = el.querySelector("#dupbtn"); if (db) db.onclick = () => dupPicker(c);
+    el.querySelectorAll("[data-unmerge]").forEach(b => b.onclick = () => unmerge(b.dataset.unmerge));
     const ic = el.querySelector("#impclear"); if (ic) ic.onclick = () => impress(c.id, null).then(() => drawDetail(true));
     const ar = el.querySelector("#arch"); if (ar) ar.onclick = () => archive(c.id, !c.archived);
     const sh = el.querySelector("#share"); if (sh) sh.onclick = () => navigator.share({ title: carTitle(c), url }).catch(() => { });
+  }
+
+  // ---------------- Duplikate: anzeigen, melden, trennen ----------------
+  // Unterschiede zwischen zwei Inseraten desselben Autos (leer = gleiche Angaben)
+  function diffList(a, b) {
+    const out = [];
+    if (a.price_eur != null && b.price_eur != null && a.price_eur !== b.price_eur) {
+      const d = b.price_eur - a.price_eur;
+      out.push(t("diff_price", { n: (d > 0 ? "+" : "−") + fmtNum(Math.abs(d)) + " €" }));
+    }
+    if (a.mileage_km != null && b.mileage_km != null && Math.abs(a.mileage_km - b.mileage_km) >= 1000)
+      out.push(t("diff_km", { a: fmtKm(a.mileage_km), b: fmtKm(b.mileage_km) }));
+    if (a.year && b.year && a.year !== b.year) out.push(t("diff_year", { a: a.year, b: b.year }));
+    if ((a.hu || "") !== (b.hu || "") && a.hu && b.hu) out.push(t("diff_hu", { a: a.hu, b: b.hu }));
+    if (a.zip && b.zip && a.zip !== b.zip) out.push(t("diff_loc", { a: a.location_text || a.zip, b: b.location_text || b.zip }));
+    if (a.seller_type && b.seller_type && a.seller_type !== b.seller_type) out.push(t("diff_seller"));
+    return out;
+  }
+  function sameCarHtml(c) {
+    const list = (c.also_on || []).map(a => ({ a, car: a.id ? st.idx.car[a.id] : st.data.cars.find(x => x.url === a.url) }));
+    if (!list.length) return "";
+    return `<div class="same-car"><div class="sc-h">⧉ ${esc(t("same_car", { n: list.length + 1 }))}</div>
+      ${list.map(({ a, car }) => {
+        const diffs = car ? diffList(c, car) : [];
+        return `<div class="sc-row"><div class="grow"><b>${esc(a.source || "?")}</b>${a.price ? ` · <span class="num">${esc(fmtPrice(a.price))}</span>` : ""}
+          <small>${esc(diffs.length ? diffs.join(" · ") : car ? t("diff_none") : "")}</small></div>
+          ${safeUrl(a.url) ? `<a class="btn btn-sm" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(t("open_short"))} ↗</a>` : ""}
+          ${a.mark && canWrite() ? `<button class="btn btn-sm" data-unmerge="${esc(a.mark.car_id + "|" + a.mark.dup_id)}">${esc(t("dup_split"))}</button>` : ""}</div>`;
+      }).join("")}</div>`;
+  }
+  // Ähnlichkeit zweier Inserate (0–100): Motor, Baureihe, Baujahr, km, Preis, Ort, Karosserie, Titel
+  function similarity(a, b) {
+    if ((a.make || "") !== (b.make || "")) return 0;
+    let s = 0;
+    if (a.engine_group && a.engine_group === b.engine_group) s += 18;
+    if (a.series && a.series === b.series) s += 10;
+    if (a.variant && a.variant === b.variant) s += 6;
+    if (a.year && b.year) s += a.year === b.year ? 12 : Math.abs(a.year - b.year) === 1 ? 5 : -10;
+    if (a.mileage_km != null && b.mileage_km != null) {
+      const dk = Math.abs(a.mileage_km - b.mileage_km);
+      s += dk < 2000 ? 20 : dk < 10000 ? 12 : dk < 30000 ? 4 : -10;
+    }
+    if (a.price_eur && b.price_eur) { const dp = Math.abs(a.price_eur - b.price_eur) / Math.max(a.price_eur, b.price_eur); s += dp < 0.04 ? 10 : dp < 0.15 ? 5 : 0; }
+    if (a.zip && a.zip === b.zip) s += 16;
+    else if (a.dist_km != null && b.dist_km != null) s += Math.abs(a.dist_km - b.dist_km) <= 8 ? 8 : 0;
+    if (bodyClass(a) === bodyClass(b)) s += 4;
+    const words = (x) => new Set(String(x.title || "").toLowerCase().split(/[^a-z0-9äöüß]+/).filter(w => w.length > 2));
+    const wa = words(a), wb = words(b);
+    let common = 0; wa.forEach(w => { if (wb.has(w)) common++; });
+    s += Math.round(8 * common / Math.max(1, Math.min(wa.size, wb.size)));
+    return Math.max(0, Math.min(100, s));
+  }
+  const placeOf = (c) => (c.location_text && c.zip && c.location_text.includes(c.zip)) ? c.location_text : [c.zip, c.location_text].filter(Boolean).join(" ") || "–";
+  function dupPicker(car) {
+    const rootOf = (x) => { let y = x, n = 0; while (y && y.dup_of && st.idx.car[y.dup_of] && n++ < 10) y = st.idx.car[y.dup_of]; return y; };
+    const myRoot = rootOf(car);
+    // Suchbegriffe vorbelegen: BMW = Baureihe + Variante (z. B. "E46 330i"), sonst das Modell (z. B. "Golf")
+    const titleModel = (String(car.title || "").replace(/\b(vw|volkswagen|audi|seat|skoda|škoda|bmw)\b/gi, "").match(/[A-Za-zÄÖÜäöü]{2,}\d?/) || [""])[0];
+    const initialQ = (car.make === "BMW" ? [car.series, car.variant].filter(Boolean).join(" ") : (car.model || titleModel)) || "";
+    const pool = st.data.cars.filter(x => x.id !== car.id && !isGone(x) && rootOf(x) !== myRoot)
+      .map(x => ({ x, s: similarity(car, x) })).sort((p, q) => q.s - p.s);
+    sheet("", (el, close) => {
+      const drawList = (q) => {
+        const qq = (q || "").trim();
+        const hits = pool.filter(({ x, s }) => (qq ? matchQuery(x, qq) : true) || (qq === initialQ && s >= 55)).slice(0, 40);
+        el.querySelector("#duplist").innerHTML = hits.map(({ x, s }) => {
+          const img = firstImg(x);
+          return `<button class="dup-row" data-pick="${esc(x.id)}"><span class="dthumb">${img ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(img)}" alt="">` : ""}</span>
+            <span class="grow"><b>${esc(carTitle(x))}</b><small class="num">${esc(fmtPrice(x.price_eur))} · ${esc(fmtKm(x.mileage_km))} · ${esc(x.year || "–")} · ${esc(x.location_text || x.zip || "")}</small>
+            <small>${esc(x.source)}${s >= 60 ? ` · <i class="sim">${esc(t("dup_likely"))}</i>` : ""}</small></span></button>`;
+        }).join("") || `<div class="empty-state">—</div>`;
+        el.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => compare(st.idx.car[b.dataset.pick]));
+      };
+      const drawSearch = () => {
+        el.innerHTML = `<div class="grab"></div><h2>${esc(t("dup_title"))}</h2>
+          <p class="qa-hint" style="margin:0 0 10px">${esc(t("dup_hint"))}</p>
+          <input class="input" id="dupq" type="search" value="${esc(initialQ)}" placeholder="${esc(t("dup_search"))}">
+          <div id="duplist" class="dup-list"></div>`;
+        const inp = el.querySelector("#dupq");
+        inp.oninput = () => drawList(inp.value);
+        drawList(initialQ);
+      };
+      const compare = (other) => {
+        const rows = [
+          ["f_price", fmtPrice(car.price_eur), fmtPrice(other.price_eur)],
+          ["f_km", fmtKm(car.mileage_km), fmtKm(other.mileage_km)],
+          ["f_reg", car.first_reg || car.year || "–", other.first_reg || other.year || "–"],
+          ["f_engine", car.engine_code || "–", other.engine_code || "–"],
+          ["f_hu", car.hu || "–", other.hu || "–"],
+          ["f_location", placeOf(car), placeOf(other)],
+          ["f_seller", car.seller_type || "–", other.seller_type || "–"],
+          ["f_source", car.source || "–", other.source || "–"],
+        ];
+        const ia = firstImg(car), ib = firstImg(other);
+        el.innerHTML = `<div class="grab"></div><h2>${esc(t("dup_compare"))}</h2>
+          <table class="cmp"><thead><tr><th></th>
+            <th>${ia ? `<img referrerpolicy="no-referrer" src="${esc(ia)}" alt="">` : ""}<small>${esc(carTitle(car))}</small></th>
+            <th>${ib ? `<img referrerpolicy="no-referrer" src="${esc(ib)}" alt="">` : ""}<small>${esc(carTitle(other))}</small></th></tr></thead>
+            <tbody>${rows.map(([k, a, b]) => `<tr class="${String(a) !== String(b) ? "diff" : ""}"><td class="cmp-k">${esc(t(k))}</td><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</tbody>
+          </table>
+          <div class="d-actions"><button class="btn" id="cmpback">${esc(t("back"))}</button>
+            <button class="btn btn-primary" id="cmpok">✓ ${esc(t("dup_confirm"))}</button></div>`;
+        el.scrollTop = 0;
+        el.querySelector("#cmpback").onclick = drawSearch;
+        el.querySelector("#cmpok").onclick = async () => {
+          try {
+            await S.addDupMark(car.id, other.id);
+            st.data.dupMarks = (st.data.dupMarks || []).concat([{ car_id: car.id, dup_id: other.id, created_by: me().user_id }]);
+            buildIndex(); close();
+            const main = rootOf(car);
+            if (st.detail && main.id !== st.detail.id) { st.detail.id = main.id; st.detail.extra = null; S.loadCarDetail(main.id).then(x => { if (st.detail && st.detail.id === main.id) { st.detail.extra = x; drawDetail(true); } }).catch(() => { }); }
+            drawDetail(true); toast(t("dup_done"));
+          } catch (e) { fail(/dup_marks/.test((e && e.message) || "") ? new Error(t("dup_needs_db")) : e); }
+        };
+      };
+      drawSearch();
+    });
+  }
+  async function unmerge(key) {
+    const [cid, did] = String(key).split("|");
+    const m = (st.data.dupMarks || []).find(x => x.car_id === cid && x.dup_id === did);
+    if (!m) return;
+    try {
+      await S.removeDupMark(m.car_id, m.dup_id);
+      st.data.dupMarks = st.data.dupMarks.filter(x => x !== m);
+      buildIndex(); drawDetail(true); toast(t("dup_split_done"));
+    } catch (e) { fail(e); }
   }
 
   // ---------------- Aktionen ----------------

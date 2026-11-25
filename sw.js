@@ -1,5 +1,5 @@
 // Service Worker: App-Hülle offline verfügbar, Daten immer frisch aus dem Netz.
-const VERSION = "g2-v5";
+const VERSION = "g2-v6";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "data.js", "i18n.js", "config.js", "vendor/supabase.js",
   "manifest.webmanifest", "icons/icon.svg", "icons/apple-touch-icon.png"];
 

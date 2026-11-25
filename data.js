@@ -48,7 +48,7 @@
     }
 
     S.loadAll = async () => {
-      const [cars, ratings, labels, carLabels, comments, events, runs, impressions] = await Promise.all([
+      const [cars, ratings, labels, carLabels, comments, events, runs, impressions, dupMarks] = await Promise.all([
         all("cars", LIST_COLS),
         all("ratings", "car_id,user_id,rating,updated_at"),
         all("labels", "*", { order: "created_at", asc: true }),
@@ -57,8 +57,9 @@
         all("events", "id,car_id,kind,old,new,at", { order: "at", limit: 400 }),
         all("job_runs", "*", { order: "finished_at", limit: 5 }),
         all("impressions", "car_id,user_id,value,at").catch(() => []),
+        all("dup_marks", "car_id,dup_id,created_by,created_at").catch(() => []),   // kommt mit migration_004
       ]);
-      const res = { cars, ratings, labels, carLabels, comments, events, runs, impressions };
+      const res = { cars, ratings, labels, carLabels, comments, events, runs, impressions, dupMarks };
       lsSet("garage02-cache", { at: Date.now(), res, me: S.me, members: S.members });
       return res;
     };
@@ -113,11 +114,14 @@
     S.setArchived = async (carId, archived) => { const { error } = await sb.from("cars").update({ archived }).eq("id", carId); if (error) throw error; };
     S.submitLink = async (url, note) => { const { error } = await sb.from("submissions").insert({ url, note }); if (error) throw error; };
     S.listSubmissions = async () => (await sb.from("submissions").select("*").order("created_at", { ascending: false }).limit(30)).data || [];
+    // Von Hand gemeldete Duplikate: car_id = Auto, bei dem gemeldet wurde, dup_id = das andere Inserat
+    S.addDupMark = async (carId, dupId) => { const { error } = await sb.from("dup_marks").insert({ car_id: carId, dup_id: dupId }); if (error) throw error; };
+    S.removeDupMark = async (carId, dupId) => { const { error } = await sb.from("dup_marks").delete().eq("car_id", carId).eq("dup_id", dupId); if (error) throw error; };
     S.updateMe = async (patch) => { await sb.from("members").update(patch).eq("user_id", S.me.user_id); Object.assign(S.me, patch); };
 
     S.subscribe = (onChange) => {
       const ch = sb.channel("garage02");
-      ["ratings", "car_labels", "labels", "comments", "cars", "events", "submissions", "impressions"].forEach(t =>
+      ["ratings", "car_labels", "labels", "comments", "cars", "events", "submissions", "impressions", "dup_marks"].forEach(t =>
         ch.on("postgres_changes", { event: "*", schema: "public", table: t }, (p) => onChange(t, p)));
       ch.subscribe();
       return () => sb.removeChannel(ch);
@@ -138,6 +142,7 @@
     const S = { mode: "demo", members, me: members.find(m => m.role === as) || members[0] };
     const st = lsGet("demo-state", { ratings: [], labels: [], carLabels: [], comments: [], archived: {}, subs: [], seq: 1 });
     st.impressions = st.impressions || [];
+    st.dupMarks = st.dupMarks || [];
     const save = () => lsSet("demo-state", st);
     let base = null;
     S.session = async () => ({ user: { id: S.me.user_id } });
@@ -148,7 +153,7 @@
       if (!base) base = await (await fetch("demo-data.json", { cache: "no-store" })).json();
       const cars = base.cars.map(c => ({ ...c, description: undefined, archived: !!st.archived[c.id] }));
       const events = (base.events || []).map((e, i) => ({ ...e, id: i + 1 }));
-      return { cars, ratings: st.ratings, impressions: st.impressions, labels: st.labels, carLabels: st.carLabels, comments: st.comments, events,
+      return { cars, ratings: st.ratings, impressions: st.impressions, dupMarks: st.dupMarks, labels: st.labels, carLabels: st.carLabels, comments: st.comments, events,
         runs: [{ finished_at: base.exported_at, stats: {} }] };
     };
     S.cached = () => null;
@@ -176,6 +181,8 @@
     };
     S.submitLink = async (url, note) => { st.subs.unshift({ id: st.seq++, url, note, status: "pending", created_at: new Date().toISOString() }); save(); };
     S.listSubmissions = async () => st.subs;
+    S.addDupMark = async (carId, dupId) => { st.dupMarks.push({ car_id: carId, dup_id: dupId, created_by: S.me.user_id, created_at: new Date().toISOString() }); save(); };
+    S.removeDupMark = async (carId, dupId) => { st.dupMarks = st.dupMarks.filter(m => !(m.car_id === carId && m.dup_id === dupId)); save(); };
     S.updateMe = async (patch) => { Object.assign(S.me, patch); if (patch.lang) lsSet("demo-lang-" + S.me.role, patch.lang); };
     S.subscribe = () => () => { };
     return S;
