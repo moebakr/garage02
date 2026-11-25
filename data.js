@@ -78,11 +78,18 @@
         if (error) throw error;
       }
     };
-    S.addLabel = async (name, color) => {
-      const { data, error } = await sb.from("labels").insert({ name, color }).select().single();
+    // name_ar kommt mit migration_003 – ohne die Spalte wird das Label nur deutsch gespeichert
+    const noArCol = (e) => e && /name_ar/.test(e.message || "");
+    S.addLabel = async (name, color, name_ar) => {
+      let { data, error } = await sb.from("labels").insert({ name, color, name_ar }).select().single();
+      if (noArCol(error)) ({ data, error } = await sb.from("labels").insert({ name, color }).select().single());
       if (error) throw error; return data;
     };
-    S.updateLabel = async (id, patch) => { const { error } = await sb.from("labels").update(patch).eq("id", id); if (error) throw error; };
+    S.updateLabel = async (id, patch) => {
+      let { error } = await sb.from("labels").update(patch).eq("id", id);
+      if (noArCol(error)) { const p = Object.assign({}, patch); delete p.name_ar; ({ error } = await sb.from("labels").update(p).eq("id", id)); }
+      if (error) throw error;
+    };
     S.deleteLabel = async (id) => { const { error } = await sb.from("labels").delete().eq("id", id); if (error) throw error; };
     S.toggleCarLabel = async (carId, labelId, on) => {
       const q = on ? sb.from("car_labels").insert({ car_id: carId, label_id: labelId })
@@ -151,7 +158,7 @@
       if (rating != null) st.ratings.push({ car_id: carId, user_id: S.me.user_id, rating, updated_at: new Date().toISOString() });
       save();
     };
-    S.addLabel = async (name, color) => { const l = { id: st.seq++, name, color, created_by: S.me.user_id, created_at: new Date().toISOString() }; st.labels.push(l); save(); return l; };
+    S.addLabel = async (name, color, name_ar) => { const l = { id: st.seq++, name, name_ar, color, created_by: S.me.user_id, created_at: new Date().toISOString() }; st.labels.push(l); save(); return l; };
     S.updateLabel = async (id, patch) => { Object.assign(st.labels.find(l => l.id === id), patch); save(); };
     S.deleteLabel = async (id) => { st.labels = st.labels.filter(l => l.id !== id); st.carLabels = st.carLabels.filter(x => x.label_id !== id); save(); };
     S.toggleCarLabel = async (carId, labelId, on) => {

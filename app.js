@@ -9,7 +9,7 @@
   const GROUP_COLOR = { M54B30: "#5b9bff", M57: "#b49cff", M43: "#2dd4bf", M54B25: "#7cb6ff", M54B22: "#a9cdff", M47: "#d4c6ff", VW16: "#fbbf24", VW18T: "#fb7185" };
   const RATING_COLOR = { 5: "var(--r5)", 4: "var(--r4)", 3: "var(--r3)", 2: "var(--r2)", 1: "var(--r1)" };
   const LABEL_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#6366f1", "#a855f7", "#ec4899", "#64748b"];
-  const DEFAULT_FILTERS = { radius: "all", maxPrice: 5000, tuv: "any", severe: false, showNo: false, source: "all" };
+  const DEFAULT_FILTERS = { maxPrice: 5000, tuv: "any", severe: false, showNo: false, source: "all" };
   const ICON = {
     spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
     trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8 20h8M9 20l1-3h4l1 3"/></svg>',
@@ -28,6 +28,7 @@
     playlist: localStorage.getItem("g2-playlist") || "all",
     sort: localStorage.getItem("g2-sort2") || "offer",
     rateWho: "me", rateVal: "all",
+    radius: localStorage.getItem("g2-radius") || "near",   // near | r300 | b | c | all
     fySeed: (Math.random() * 1e9) | 0, fyCount: 20, skipped: new Set(),
     q: "", filters: Object.assign({}, DEFAULT_FILTERS, JSON.parse(localStorage.getItem("g2-filters2") || "{}")),
     detail: null, swipeQueue: null, undo: [], lastVisit: null, listScroll: 0,
@@ -79,8 +80,26 @@
     d.carLabels.forEach(x => { (idx.carLabels[x.car_id] = idx.carLabels[x.car_id] || []).push(x.label_id); });
     d.comments.forEach(c => { (idx.comments[c.car_id] = idx.comments[c.car_id] || []).push(c); });
     d.events.forEach(e => { (idx.events[e.car_id] = idx.events[e.car_id] || []).push(e); });
+    // Schwellen für "weit weg, aber Top-Angebot": relativ zum aktuellen Angebot,
+    // 150–300 km ab den besten 6 %, über 300 km nur die besten 2 %
+    // Maßstab ist der Passt-Score (Motor, Preis, km, TÜV) – nicht der reine Preisvorteil, sonst rutschen Billig-Bastler rein
+    const fitOf = (c) => c.score ?? 0;
+    const sc = d.cars.filter(c => c.eligible && !c.archived && !isGone(c) && !c.dup_of && !c.severe).map(fitOf).sort((a, b) => a - b);
+    const q = (p) => sc.length ? sc[Math.min(sc.length - 1, Math.floor(p * sc.length))] : 999;
+    idx.tB = q(0.94); idx.tC = q(0.98);
     st.idx = idx;
   }
+  const zoneOf = (c) => c.zone || "B";   // ohne Entfernung: wie 150–300 behandeln
+  function inRadius(c, mode = st.radius) {
+    const z = zoneOf(c);
+    if (mode === "near") return z === "A" || (!c.severe && ((z === "B" && (c.score ?? 0) >= st.idx.tB) || (z === "C" && (c.score ?? 0) >= st.idx.tC)));
+    if (mode === "r300") return z !== "C";
+    if (mode === "b") return z === "B";
+    if (mode === "c") return z === "C";
+    return true;
+  }
+  const isFarPick = (c) => st.radius === "near" && zoneOf(c) !== "A";
+  const farTag = (c) => isFarPick(c) ? `<span class="tag far">↗ ${esc(t("far_pick"))}</span>` : "";
   const myRating = (id) => { const r = (st.idx.ratings[id] || {})[me().user_id]; return r ? r.rating : null; };
   const ratingOf = (id, uid) => { const r = (st.idx.ratings[id] || {})[uid]; return r ? r.rating : null; };
 
@@ -117,7 +136,7 @@
   }
 
   // ---------------- Filter ----------------
-  function inBase(c, playlist) {
+  function inBase(c, playlist, radius = st.radius) {
     const f = st.filters;
     if (c.dup_of && st.idx.car[c.dup_of]) return false;
     if (playlist === "archive") return c.archived || isGone(c) || (!c.eligible && !c.manual);
@@ -125,8 +144,7 @@
     if (!c.eligible && !c.manual) return false;
     if (playlist === "problems") return !!c.severe;
     if (c.severe && !f.severe) return false;
-    if (f.radius === "a" && (c.zone === "B" || c.zone === "C")) return false;
-    if (f.radius === "ab" && c.zone === "C") return false;
+    if (radius && !inRadius(c, radius)) return false;
     if (f.maxPrice < 5000 && c.price_eur != null && c.price_eur > f.maxPrice) return false;
     if (f.tuv !== "any") { const l = huLeft(c); if (l == null || l < (f.tuv === "12" ? 12 : 0)) return false; }
     if (f.source !== "all" && c.source !== f.source) return false;
@@ -187,12 +205,13 @@
     const v = t("lbl_" + k);
     return v === "lbl_" + k ? l.text : v;
   }
+  const labelName = (l) => (st.lang === "ar" && l.name_ar) ? l.name_ar : l.name;
   function tagsHtml(c, max) {
     const out = [];
     if (isNew(c)) out.push(`<span class="tag good">${esc(t("lbl_new"))}</span>`);
     (st.idx.carLabels[c.id] || []).forEach(id => {
       const l = st.idx.labels[id];
-      if (l) out.push(`<span class="tag custom" style="background:${esc(l.color)}">${esc(l.name)}</span>`);
+      if (l) out.push(`<span class="tag custom" style="background:${esc(l.color)}">${esc(labelName(l))}</span>`);
     });
     const order = { bad: 0, warn: 1, good: 2, info: 3 };
     (c.auto_labels || []).filter(l => !(l.key === "zone" || (l.key === "markt" && c.expected_price))).sort((a, b) => order[a.tone] - order[b.tone])
@@ -221,7 +240,7 @@
           <div class="c-price num">${esc(fmtPrice(c.price_eur))}${d ? `<small class="${d < 0 ? "down" : "up"}">${d < 0 ? "↓ " : "↑ "}${esc(fmtNum(Math.abs(d)))} €</small>` : ""}</div></div>
         <div class="c-facts">${engineChip(c)}<span class="num"><b>${esc(fmtKm(c.mileage_km))}</b></span><span class="num">· ${esc(c.year || "–")}</span>
           <span class="num">· ${c.dist_km != null ? esc(c.dist_km + " km") : "? km"}</span></div>
-        <div class="tags">${dealHtml(c)}${tagsHtml(c, 6)}</div>
+        <div class="tags">${farTag(c)}${dealHtml(c)}${tagsHtml(c, 6)}</div>
       </div></article>`;
   }
 
@@ -251,6 +270,23 @@
     return r ? `${t("last_run")}: ${ago(r.finished_at)}` : "";
   }
 
+  // ---------------- Umkreis-Umschalter (oben in Für dich / Top / Eindruck) ----------------
+  // "Nah" = bis 150 km + die besten Angebote von weiter weg (markiert mit ↗)
+  const RADIUS_MODES = [["near", "rad_near"], ["r300", "rad_300"], ["b", "rad_b"], ["c", "rad_c"], ["all", "rad_all"]];
+  function radiusBarHtml(countFn) {
+    return `<div class="radbar" role="tablist">${RADIUS_MODES.map(([k, key]) => {
+      const n = countFn ? countFn(k) : null;
+      return `<button data-rad="${k}" class="${st.radius === k ? "on" : ""}"><bdi dir="ltr">${esc(t(key))}</bdi>${n != null ? `<span class="cnt">${n}</span>` : ""}</button>`;
+    }).join("")}</div>`;
+  }
+  function bindRadius(view, rerender) {
+    view.querySelectorAll("[data-rad]").forEach(b => b.onclick = () => {
+      st.radius = b.dataset.rad; localStorage.setItem("g2-radius", st.radius);
+      st.swipeQueue = null; st.fyCount = 20;
+      rerender(); window.scrollTo(0, 0);
+    });
+  }
+
   // ---------------- Render: Top-Liste ----------------
   // Bewertungs-Filter: wessen Bewertung (ich / der andere) und welche Stufe
   function rateRowHtml() {
@@ -271,7 +307,7 @@
     const chips = [["all", t("all")], ["fav", "★ " + t("favorites")]];
     if (canWrite()) chips.push(["unrated", t("unrated")]);
     GROUPS.forEach(g => chips.push([g, t("group_" + g) !== "group_" + g ? t("group_" + g) : g]));
-    st.data.labels.forEach(l => chips.push(["label:" + l.id, l.name, l.color]));
+    st.data.labels.forEach(l => chips.push(["label:" + l.id, labelName(l), l.color]));
     chips.push(["problems", t("problems")], ["archive", t("archive")]);
     const counts = {};
     chips.forEach(([k]) => counts[k] = visibleCars(k).length);
@@ -281,6 +317,7 @@
         <div class="top-row"><div class="brand">GARAGE<span>/</span>02</div><div class="top-meta">${esc(lastRunText())}</div></div>
         <div class="searchbar"><input class="input" id="q" type="search" placeholder="${esc(t("search"))}" value="${esc(st.q)}">
           <button class="icon-btn" id="filterbtn" aria-label="${esc(t("filters"))}">${ICON.filter}${nf ? `<span class="badge">${nf}</span>` : ""}</button></div>
+        ${radiusBarHtml((m) => st.data.cars.filter(c => inBase(c, st.playlist, m) && inPlaylist(c, st.playlist) && matchQuery(c, st.q) && rateOk(c)).length)}
         <div class="chips">${chips.filter(([k]) => counts[k] > 0 || ["all", "fav", "unrated"].includes(k) || k === st.playlist).map(([k, lab, col]) =>
           `<button class="chip${st.playlist === k ? " on" : ""}" data-pl="${esc(k)}">${col ? `<i class="dot" style="background:${esc(col)}"></i>` : GROUP_COLOR[k] ? `<i class="dot" style="background:${GROUP_COLOR[k]}"></i>` : ""}${esc(lab)} <span class="cnt">${counts[k]}</span></button>`).join("")}</div>
         ${rateRowHtml()}
@@ -295,6 +332,7 @@
     view.querySelectorAll("[data-rw]").forEach(b => b.onclick = () => { st.rateWho = b.dataset.rw; renderCars(); });
     view.querySelectorAll("[data-rv]").forEach(b => b.onclick = () => { st.rateVal = b.dataset.rv; renderCars(); });
     view.querySelector("#filterbtn").onclick = openFilters;
+    bindRadius(view, renderCars);
     view.querySelectorAll("[data-pl]").forEach(b => b.onclick = () => { st.playlist = b.dataset.pl; localStorage.setItem("g2-playlist", st.playlist); renderCars(); window.scrollTo(0, 0); });
     view.querySelector("#list").onclick = (e) => { const a = e.target.closest(".card"); if (a) openDetail(a.dataset.id); };
     const on = view.querySelector(".chip.on"); if (on) on.scrollIntoView({ inline: "center", block: "nearest" });
@@ -312,8 +350,6 @@
     const f = Object.assign({}, st.filters);
     const draw = (el) => {
       el.innerHTML = `<div class="grab"></div><h2>${esc(t("filters"))}</h2>
-        <div class="field"><span>${esc(t("radius"))}</span><div class="seg" data-k="radius">
-          <button data-v="a" class="${f.radius === "a" ? "on" : ""}">${esc(t("radius_a"))}</button><button data-v="ab" class="${f.radius === "ab" ? "on" : ""}">${esc(t("radius_ab"))}</button><button data-v="all" class="${f.radius === "all" ? "on" : ""}">${esc(t("radius_all"))}</button></div></div>
         <div class="field"><span>${esc(t("max_price"))}: <b class="num" id="pv">${esc(fmtPrice(f.maxPrice))}</b></span>
           <div class="range-row"><input type="range" min="1000" max="5000" step="250" value="${f.maxPrice}" id="pr"></div></div>
         <div class="field"><span>${esc(t("tuv"))}</span><div class="seg" data-k="tuv">
@@ -402,7 +438,7 @@
         ${(c.also_on || []).length ? `<div class="tags" style="margin-top:8px">${c.also_on.map(a => safeUrl(a.url) ? `<a class="tag" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(t("also_on"))} ${esc(a.source)}${a.price ? " · " + esc(fmtPrice(a.price)) : ""} ↗</a>` : "").join("")}</div>` : ""}
         ${!c.eligible && (c.exclude_reasons || []).length ? `<div class="excluded">${esc(t("excluded"))}: ${esc(c.exclude_reasons.join(", "))}</div>` : ""}
         ${c.expected_price ? `<div class="market"><div><small>${esc(t("market_value"))}</small><b class="num">≈ ${esc(fmtPrice(c.expected_price))}</b></div>
-          <div>${dealHtml(c)}</div><div><small>${esc(t("offer_score"))}</small><b class="num">${esc(c.offer_score ?? "–")}</b></div></div>` : ""}
+          <div>${dealHtml(c, true)}</div><div><small>${esc(t("offer_score"))}</small><b class="num">${esc(c.offer_score ?? "–")}</b></div></div>` : ""}
         <div class="tags" style="margin-top:10px">${tagsHtml(c)}</div>
         ${canWrite() && myImpression(c.id) != null ? `<div class="imp-line">${esc(t("your_impression"))}: <b>${esc(t({ "-1": "imp_no", "1": "imp_yes", "2": "imp_top" }[myImpression(c.id)]))}</b>
           <button class="linkbtn" id="impclear" style="margin:0 0 0 8px;font-size:13px">${esc(t("reset"))}</button></div>` : ""}
@@ -431,7 +467,7 @@
         </div></section>
 
         <section class="box"><h3>${esc(t("labels"))}</h3><div class="label-edit">
-          ${st.data.labels.map(l => { const on = myLabels.includes(l.id); return `<button class="label-toggle${on ? " on" : ""}" data-lab="${l.id}" style="${on ? `background:${esc(l.color)};border-color:${esc(l.color)}` : ""}" ${canWrite() ? "" : "disabled"}>${esc(l.name)}</button>`; }).join("")}
+          ${st.data.labels.map(l => { const on = myLabels.includes(l.id); return `<button class="label-toggle${on ? " on" : ""}" data-lab="${l.id}" style="${on ? `background:${esc(l.color)};border-color:${esc(l.color)}` : ""}" ${canWrite() ? "" : "disabled"}>${esc(labelName(l))}</button>`; }).join("")}
           ${canWrite() ? `<button class="label-toggle" id="newlab">＋ ${esc(t("new_label"))}</button>` : ""}</div></section>
 
         <section class="box"><h3>${esc(t("notes"))}</h3>
@@ -498,27 +534,70 @@
     try { await S.setArchived(carId, a); toast(t("saved")); } catch (e) { fail(e); }
     drawDetail(true);
   }
+  // Übersetzung für Label-Namen – kostenlos, ohne Konto/Schlüssel:
+  // 1. Google Übersetzer (freie Web-Schnittstelle), 2. Ersatz: Maschinen-Übersetzung von MyMemory.
+  // Nur ein Vorschlag – das zweite Feld bleibt editierbar und ist Pflicht.
+  async function translate(text, from, to) {
+    try {
+      const r = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=${from}&tl=${to}&q=${encodeURIComponent(text)}`);
+      const j = await r.json();
+      const out = (j && j[0] || []).map(p => p[0]).join("").trim();
+      if (out) return out;
+    } catch (e) { /* weiter mit Ersatz */ }
+    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${from}|${to}`);
+    const j = await r.json();
+    const mt = (j.matches || []).find(m => m["created-by"] === "MT!");   // menschliche Treffer dort sind oft unpassend
+    return mt ? String(mt.translation || "").trim() : "";
+  }
   function labelEditor(label, onDone) {
     let color = label ? label.color : LABEL_COLORS[st.data.labels.length % LABEL_COLORS.length];
+    // Erst die eigene Sprache, darunter automatisch die andere
+    const mine = st.lang === "ar" ? "ar" : "de", other = mine === "ar" ? "de" : "ar";
+    const val = { de: label ? label.name : "", ar: label ? (label.name_ar || "") : "" };
+    let touched = !!(label && label.name_ar);   // zweites Feld von Hand geändert -> nicht mehr überschreiben
+    let timer = null, reqNo = 0;
     sheet("", (el, close) => {
+      const field = (lang, primary) => `<label class="lab-field"><span>${esc(t(lang === "de" ? "label_de" : "label_ar"))}${primary ? "" : ` <i id="trst"></i>`}</span>
+        <input class="input" id="ln-${lang}" dir="${lang === "ar" ? "rtl" : "ltr"}" maxlength="30" value="${esc(val[lang])}"></label>`;
       const draw = () => {
         el.innerHTML = `<div class="grab"></div><h2>${esc(label ? t("rename") : t("new_label"))}</h2>
-          <input class="input" id="ln" placeholder="${esc(t("label_name"))}" maxlength="30" value="${esc(label ? label.name : "")}">
+          ${field(mine, true)}${field(other, false)}
           <div class="swatches">${LABEL_COLORS.map(c => `<button class="swatch${c === color ? " on" : ""}" data-c="${c}" style="background:${c}"></button>`).join("")}</div>
           <div class="d-actions">${label ? `<button class="btn" id="ld" style="color:var(--bad)">${esc(t("delete"))}</button>` : `<button class="btn" id="lc">${esc(t("cancel"))}</button>`}
           <button class="btn btn-primary" id="ls">${esc(label ? t("save") : t("create"))}</button></div>`;
-        el.querySelectorAll("[data-c]").forEach(b => b.onclick = () => { color = b.dataset.c; const v = el.querySelector("#ln").value; draw(); el.querySelector("#ln").value = v; });
+        const inMine = el.querySelector("#ln-" + mine), inOther = el.querySelector("#ln-" + other), status = el.querySelector("#trst");
+        const sync = () => { val[mine] = inMine.value; val[other] = inOther.value; };
+        inMine.oninput = () => {
+          sync();
+          if (touched) return;
+          clearTimeout(timer);
+          const text = inMine.value.trim();
+          if (!text) { inOther.value = val[other] = ""; status.textContent = ""; return; }
+          timer = setTimeout(async () => {
+            const no = ++reqNo;
+            status.textContent = t("translating");
+            try {
+              const tr = await translate(text, mine, other);
+              if (no !== reqNo || touched) return;
+              if (tr) { inOther.value = val[other] = tr; status.textContent = t("translated_auto"); }
+              else status.textContent = t("translate_failed");
+            } catch (e) { if (no === reqNo) status.textContent = t("translate_failed"); }
+          }, 600);
+        };
+        inOther.oninput = () => { touched = inOther.value.trim() !== ""; sync(); status.textContent = ""; };
+        el.querySelectorAll("[data-c]").forEach(b => b.onclick = () => { sync(); color = b.dataset.c; draw(); });
         const lc = el.querySelector("#lc"); if (lc) lc.onclick = close;
         const ld = el.querySelector("#ld"); if (ld) ld.onclick = async () => { try { await S.deleteLabel(label.id); st.data.labels = st.data.labels.filter(l => l.id !== label.id); st.data.carLabels = st.data.carLabels.filter(x => x.label_id !== label.id); buildIndex(); close(); render(); } catch (e) { fail(e); } };
         el.querySelector("#ls").onclick = async () => {
-          const name = el.querySelector("#ln").value.trim();
-          if (!name) return;
+          sync();
+          const name = val.de.trim(), name_ar = val.ar.trim();
+          if (!name || !name_ar) { toast(t("label_both")); (name ? el.querySelector("#ln-ar") : el.querySelector("#ln-de")).focus(); return; }
           try {
-            if (label) { await S.updateLabel(label.id, { name, color }); Object.assign(label, { name, color }); buildIndex(); close(); render(); }
-            else { const l = await S.addLabel(name, color); st.data.labels.push(l); buildIndex(); close(); if (onDone) onDone(l); }
+            if (label) { await S.updateLabel(label.id, { name, name_ar, color }); Object.assign(label, { name, name_ar, color }); buildIndex(); close(); render(); }
+            else { const l = await S.addLabel(name, color, name_ar); if (!l.name_ar) l.name_ar = name_ar; st.data.labels.push(l); buildIndex(); close(); if (onDone) onDone(l); }
           } catch (e) { fail(e); }
         };
-        setTimeout(() => el.querySelector("#ln").focus(), 50);
+        setTimeout(() => inMine.focus(), 50);
       };
       draw();
     });
@@ -621,19 +700,27 @@
     const model = canWrite() ? prefModel(me().user_id) : { count: 0 };
     view.innerHTML = `<header class="top"><div class="top-row"><div class="brand">GARAGE<span>/</span>02</div>
         <button class="btn btn-sm" id="shuffle" style="margin-inline-start:auto">↻ ${esc(t("reshuffle"))}</button></div>
-        <div class="fy-sub">${esc(canWrite() ? (model.count < 10 ? t("fy_learning", { n: model.count }) : t("fy_learned", { n: model.count })) : t("fy_readonly"))}</div></header>
+        <div class="fy-sub">${esc(canWrite() ? (model.count < 10 ? t("fy_learning", { n: model.count }) : t("fy_learned", { n: model.count })) : t("fy_readonly"))}</div>
+        ${radiusBarHtml((m) => st.data.cars.filter(c => inBase(c, "all", m) && !c.severe).length)}</header>
       <main class="content">
         ${shown.map(({ c, why }) => fyCardHtml(c, why)).join("") || `<div class="empty-state">—</div>`}
         ${list.length > shown.length ? `<button class="btn btn-block" id="fymore">${esc(t("show_more"))}</button>` : ""}
       </main>`;
+    bindRadius(view, renderForYou);
     view.querySelector("#shuffle").onclick = () => { st.fySeed = (Math.random() * 1e9) | 0; st.fyCount = 20; renderForYou(); window.scrollTo(0, 0); };
     const more = view.querySelector("#fymore"); if (more) more.onclick = () => { st.fyCount += 20; const y = window.scrollY; renderForYou(); window.scrollTo(0, y); };
     view.querySelectorAll(".fy-card").forEach(el => el.onclick = () => openDetail(el.dataset.id));
   }
-  function dealHtml(c) {
+  // Karten: kurz "Marktwert ↓/–/↑"; Detailansicht (long): mit Euro-Betrag
+  function dealHtml(c, long) {
     if (c.deal_pct == null || !c.expected_price || c.price_eur == null) return "";
     const diff = c.expected_price - c.price_eur;
-    if (Math.abs(c.deal_pct) < 0.08) return `<span class="deal neutral">${esc(t("deal_fair"))}</span>`;
+    const fair = Math.abs(c.deal_pct) < 0.08;
+    if (!long) {
+      const [cls, arrow] = fair ? ["neutral", "–"] : diff > 0 ? ["good", "↓"] : ["bad", "↑"];
+      return `<span class="deal ${cls}">${esc(t("mv_short"))} <b>${arrow}</b></span>`;
+    }
+    if (fair) return `<span class="deal neutral">${esc(t("deal_fair"))}</span>`;
     return diff > 0 ? `<span class="deal good">${esc(t("deal_below", { n: fmtNum(diff) }))}</span>`
       : `<span class="deal bad">${esc(t("deal_above", { n: fmtNum(-diff) }))}</span>`;
   }
@@ -646,7 +733,7 @@
         <div class="fy-info"><h3>${esc(carTitle(c))}</h3>
           <div class="row"><b class="num">${esc(fmtPrice(c.price_eur))}</b>${engineChip(c)}<span class="num">${esc(fmtKm(c.mileage_km))}</span><span class="num">${esc(c.year || "")}</span><span class="num">${c.dist_km != null ? esc(c.dist_km + " km") : ""}</span></div></div></div>
       <div class="fy-bottom">${why ? `<div class="fy-why">✦ ${esc(why)}</div>` : ""}
-        <div class="tags">${dealHtml(c)}${tagsHtml(c, 5)}</div></div></article>`;
+        <div class="tags">${farTag(c)}${dealHtml(c)}${tagsHtml(c, 5)}</div></div></article>`;
   }
 
   // ---------------- Eindruck (Swipen) ----------------
@@ -667,7 +754,8 @@
     const done = st.data.impressions.filter(i => i.user_id === me().user_id).length;
     view.innerHTML = `<header class="top"><div class="top-row"><div class="brand">GARAGE<span>/</span>02</div>
         <div class="top-meta">${esc(t("imp_count", { n: done }))}</div></div>
-        <div class="fy-sub">${esc(t("imp_hint"))}</div></header>
+        <div class="fy-sub">${esc(t("imp_hint"))}</div>
+        ${radiusBarHtml((m) => st.data.cars.filter(c => inBase(c, "unrated", m) && myRating(c.id) == null && myImpression(c.id) == null).length)}</header>
       <main class="content" style="padding-bottom:0">
         ${ids.length ? `<div class="swipe-wrap">${ids.slice().reverse().map((id, i) => swipeCardHtml(st.idx.car[id], i === 0 && ids.length > 1)).join("")}</div>
         <div class="swipe-buttons">
@@ -678,6 +766,7 @@
           <button class="sbtn small" id="undo" style="color:var(--muted)" ${st.undo.length ? "" : "disabled"} aria-label="${esc(t("undo"))}">↶</button>
         </div><div class="swipe-hint">${esc(t("swipe_hint"))}</div>` : `<div class="empty-state">${esc(t("swipe_empty"))}</div>`}
       </main>`;
+    bindRadius(view, renderSwipe);
     if (!ids.length) return;
     const top = view.querySelector(".swipe-card:last-child");
     attachSwipe(top, ids[0]);
@@ -701,7 +790,7 @@
             ${engineChip(c)}<span class="num">${esc(fmtKm(c.mileage_km))}</span><span class="num">${esc(c.year || "")}</span><span class="num">${c.dist_km != null ? esc(c.dist_km + " km") : ""}</span></div></div>
         <div class="stamp-big yes">${esc(t("imp_yes"))}</div><div class="stamp-big no">${esc(t("imp_no"))}</div><div class="stamp-big top">${esc(t("imp_top"))}</div>
       </div>
-      <div class="swipe-bottom"><div class="tags">${dealHtml(c)}${tagsHtml(c, 6)}</div>
+      <div class="swipe-bottom"><div class="tags">${farTag(c)}${dealHtml(c)}${tagsHtml(c, 6)}</div>
         <div class="snip">${esc((c.title || "").slice(0, 140))}</div></div></div>`;
   }
   function attachSwipe(card, id) {
@@ -826,7 +915,7 @@
           <button class="btn btn-primary btn-block" type="submit">${esc(t("submit"))}</button></form>
           <div id="subs" style="margin-top:8px"></div></section>` : ""}
         ${canWrite() ? `<section class="box"><h3>${esc(t("manage_labels"))}</h3>
-          ${st.data.labels.map(l => `<div class="list-row"><span class="tag custom" style="background:${esc(l.color)}">${esc(l.name)}</span><div class="grow"></div><span class="num" style="color:var(--muted);font-size:13px">${st.data.carLabels.filter(x => x.label_id === l.id).length}</span><button class="btn btn-sm" data-el="${l.id}">${esc(t("rename"))}</button></div>`).join("")}
+          ${st.data.labels.map(l => `<div class="list-row"><span class="tag custom" style="background:${esc(l.color)}">${esc(labelName(l))}</span><div class="grow"></div><span class="num" style="color:var(--muted);font-size:13px">${st.data.carLabels.filter(x => x.label_id === l.id).length}</span><button class="btn btn-sm" data-el="${l.id}">${esc(t("rename"))}</button></div>`).join("")}
           <button class="btn btn-block" id="addlab" style="margin-top:8px">＋ ${esc(t("new_label"))}</button></section>` : ""}
         <section class="box"><h3>${esc(t("language"))}</h3><div class="lang-switch"><button data-lang="de" class="${st.lang === "de" ? "on" : ""}">Deutsch</button><button data-lang="ar" class="${st.lang === "ar" ? "on" : ""}">العربية</button></div></section>
         <section class="box"><h3>${esc(t("last_run"))}</h3><div style="font-size:14px">${run ? `${esc(fmtDate(run.finished_at, true))} · ${esc(ago(run.finished_at))}` : esc(t("never"))}
