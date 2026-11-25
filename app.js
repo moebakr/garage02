@@ -254,6 +254,11 @@
     const unread = feedItems().filter(i => st.lastVisit && i.at > st.lastVisit).length;
     $app.innerHTML = `<div id="view"></div>
       <nav class="tabbar">${tabs.map(([k, ic, lab]) => `<button data-tab="${k}" class="${st.tab === k ? "on" : ""}">${ic}<span>${esc(lab)}</span>${k === "feed" && unread ? `<span class="badge">${unread > 99 ? "99+" : unread}</span>` : ""}</button>`).join("")}</nav>`;
+    // Immer sichtbarer Knopf zum Link-Einfügen (nur wer schreiben darf, nicht beim Swipen)
+    if (canWrite() && ["foryou", "cars", "feed"].includes(st.tab)) {
+      $app.insertAdjacentHTML("beforeend", `<button class="fab" id="fab" aria-label="${esc(t("qa_title"))}"><span>＋</span>${esc(t("qa_fab"))}</button>`);
+      $app.querySelector("#fab").onclick = () => quickAdd();
+    }
     $app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
     ({ foryou: renderForYou, cars: renderCars, swipe: renderSwipe, feed: renderFeed, more: renderMore })[st.tab]();
   }
@@ -902,6 +907,74 @@
     setTimeout(() => { st.lastVisit = now; S.updateMe({ last_visit: now }).catch(() => { }); }, 4000);
   }
 
+  // ---------------- Schnell hinzufügen: Link einfügen ----------------
+  // Erkennt Kleinanzeigen-, mobile.de- und AutoScout24-Links (auch mitten in kopiertem Text)
+  // und rechnet daraus dieselbe ID aus, die der Suchlauf vergibt.
+  function parseListing(text) {
+    const m = String(text || "").match(/https?:\/\/[^\s<>"']+/i);
+    if (!m) return null;
+    const url = m[0].replace(/[),.;!]+$/, "").replace(/^http:/i, "https:");
+    let k;
+    if (/kleinanzeigen\.de/i.test(url) && (k = url.match(/\/(\d{8,12})(?:-\d+-\d+)?(?:[\/?#]|$)/))) return { url, id: "ka:" + k[1] };
+    if (/autoscout24\./i.test(url) && (k = url.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i))) return { url, id: "as:" + k[0].toLowerCase() };
+    if (/mobile\.de/i.test(url) && (k = url.match(/[?&]id=(\d{5,})/) || url.match(/(\d{6,})\.html/))) return { url, id: "mde:" + k[1] };
+    return { url, id: null };
+  }
+  function findExisting(id) {
+    let c = st.idx.car[id];
+    if (!c) { const raw = id.split(":")[1]; c = st.data.cars.find(x => (x.also_on || []).some(a => (a.url || "").includes(raw))); }
+    if (c && c.dup_of && st.idx.car[c.dup_of]) c = st.idx.car[c.dup_of];
+    return c || null;
+  }
+  async function subsHtml() {
+    const subs = (await S.listSubmissions().catch(() => [])).filter(s => !s.created_by || s.created_by === me().user_id).slice(0, 6);
+    if (!subs.length) return "";
+    return `<div class="section-title" style="margin-top:14px">${esc(t("my_links"))}</div>` + subs.map(s => {
+      const state = s.status === "pending" ? ["warn", "⏳ " + t("pending")] : s.status === "done" ? ["good", "✓ " + t("done")] : ["bad", "! " + t("error")];
+      const car = s.car_id && findExisting(s.car_id);
+      return `<div class="list-row"><div class="grow"><b class="qa-st ${state[0]}">${esc(state[1])}</b><small>${esc(car ? carTitle(car) : (s.result || s.url))}</small></div>${car ? `<button class="btn btn-sm" data-open="${esc(car.id)}">${esc(t("qa_open"))}</button>` : ""}</div>`;
+    }).join("");
+  }
+  function quickAdd(prefill) {
+    sheet("", (el, close) => {
+      let busy = false;
+      const draw = async (msg, tone) => {
+        el.innerHTML = `<div class="grab"></div><h2>${esc(t("qa_title"))}</h2>
+          <button class="btn btn-primary btn-block qa-paste" id="qap">📋 ${esc(t("qa_paste"))}</button>
+          <div class="qa-or">${esc(t("qa_or"))}</div>
+          <form id="qaf" class="qa-row"><input class="input" id="qau" type="text" inputmode="url" autocomplete="off" autocapitalize="off" dir="ltr" placeholder="https://…">
+            <button class="btn" type="submit">${esc(t("qa_go"))}</button></form>
+          ${msg ? `<div class="qa-msg ${tone || ""}">${esc(msg)}</div>` : `<p class="qa-hint">${esc(t("qa_hint"))}</p>`}
+          <div id="qasubs"></div>`;
+        const inp = el.querySelector("#qau");
+        el.querySelector("#qaf").onsubmit = (e) => { e.preventDefault(); handle(inp.value); };
+        inp.addEventListener("paste", () => setTimeout(() => handle(inp.value), 0));   // Einfügen reicht – kein Extra-Klick
+        el.querySelector("#qap").onclick = async () => {
+          try { const txt = await navigator.clipboard.readText(); inp.value = txt; handle(txt); }
+          catch (e) { draw(t("qa_clip_denied"), "warn"); setTimeout(() => { const i = el.querySelector("#qau"); if (i) i.focus(); }, 50); }
+        };
+        const box = el.querySelector("#qasubs");
+        box.innerHTML = await subsHtml();
+        box.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { close(); openDetail(b.dataset.open); });
+      };
+      async function handle(text) {
+        if (busy) return;
+        const p = parseListing(text);
+        if (!p || !p.id) { if (String(text || "").trim()) draw(t("qa_invalid"), "bad"); return; }
+        const hit = findExisting(p.id);
+        if (hit) { close(); openDetail(hit.id); toast(t("qa_exists")); return; }
+        busy = true;
+        try {
+          const subs = await S.listSubmissions().catch(() => []);
+          const waiting = subs.some(s => s.status === "pending" && (s.url === p.url || (parseListing(s.url) || {}).id === p.id));
+          if (waiting) await draw(t("qa_pending"), "warn");
+          else { await S.submitLink(p.url, null); await draw(t("qa_saved"), "good"); }
+        } catch (e) { fail(e); } finally { busy = false; }
+      }
+      draw().then(() => { if (prefill) { el.querySelector("#qau").value = prefill; handle(prefill); } });
+    });
+  }
+
   // ---------------- Mehr ----------------
   async function renderMore() {
     const view = document.getElementById("view");
@@ -909,10 +982,8 @@
     view.innerHTML = `<header class="top"><div class="top-row"><div class="brand">GARAGE<span>/</span>02</div><div class="top-meta">${esc(me().name)}${canWrite() ? "" : " · " + esc(t("read_only"))}</div></div></header>
       <main class="content">
         ${canWrite() ? `<section class="box"><h3>${esc(t("add_link"))}</h3>
-          <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">${esc(t("add_link_hint"))}</p>
-          <form id="lf"><input class="input" id="lu" type="url" inputmode="url" placeholder="https://www.kleinanzeigen.de/s-anzeige/…" required style="margin-bottom:8px">
-          <input class="input" id="ln" placeholder="${esc(t("link_note"))}" style="margin-bottom:10px">
-          <button class="btn btn-primary btn-block" type="submit">${esc(t("submit"))}</button></form>
+          <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">${esc(t("qa_hint"))}</p>
+          <button class="btn btn-primary btn-block" id="qa-open">＋ ${esc(t("qa_title"))}</button>
           <div id="subs" style="margin-top:8px"></div></section>` : ""}
         ${canWrite() ? `<section class="box"><h3>${esc(t("manage_labels"))}</h3>
           ${st.data.labels.map(l => `<div class="list-row"><span class="tag custom" style="background:${esc(l.color)}">${esc(labelName(l))}</span><div class="grow"></div><span class="num" style="color:var(--muted);font-size:13px">${st.data.carLabels.filter(x => x.label_id === l.id).length}</span><button class="btn btn-sm" data-el="${l.id}">${esc(t("rename"))}</button></div>`).join("")}
@@ -926,22 +997,13 @@
       </main>`;
     view.querySelectorAll("[data-lang]").forEach(b => b.onclick = async () => { st.lang = b.dataset.lang; await S.updateMe({ lang: st.lang }).catch(() => { }); render(); });
     view.querySelector("#logout").onclick = async () => { await S.signOut(); location.reload(); };
-    const lf = view.querySelector("#lf");
-    if (lf) {
-      lf.onsubmit = async (e) => {
-        e.preventDefault();
-        const url = view.querySelector("#lu").value.trim();
-        if (!/^https:\/\/(www\.)?(kleinanzeigen\.de|suchen\.mobile\.de|m\.mobile\.de|www\.autoscout24\.de|autoscout24\.de)\//.test(url)) { toast("Kleinanzeigen, mobile.de oder AutoScout24"); return; }
-        try { await S.submitLink(url, view.querySelector("#ln").value.trim() || null); toast(t("link_sent")); lf.reset(); drawSubs(); } catch (er) { fail(er); }
-      };
-      drawSubs();
-    }
+    const qo = view.querySelector("#qa-open");
+    if (qo) { qo.onclick = () => quickAdd(); drawSubs(); }
     view.querySelectorAll("[data-el]").forEach(b => b.onclick = () => labelEditor(st.idx.labels[Number(b.dataset.el)]));
     const al = view.querySelector("#addlab"); if (al) al.onclick = () => labelEditor(null, () => render());
     async function drawSubs() {
       const box = view.querySelector("#subs"); if (!box) return;
-      const subs = await S.listSubmissions().catch(() => []);
-      box.innerHTML = subs.length ? `<div class="section-title" style="margin-top:14px">${esc(t("my_links"))}</div>` + subs.slice(0, 10).map(s => `<div class="list-row"><div class="grow"><b style="font-size:13px">${esc(s.status === "pending" ? t("pending") : s.status === "done" ? t("done") : t("error"))}</b><small>${esc(s.result || s.url)}</small></div>${s.car_id && st.idx.car[s.car_id] ? `<button class="btn btn-sm" data-open="${esc(s.car_id)}">${esc(t("details"))}</button>` : ""}</div>`).join("") : "";
+      box.innerHTML = await subsHtml();
       box.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openDetail(b.dataset.open));
     }
   }
@@ -969,6 +1031,7 @@
     reloadTimer = setTimeout(async () => {
       try {
         st.data = await S.loadAll(); buildIndex();
+        if (st.readyCar && st.idx.car[st.readyCar]) { toast(t("qa_ready") + " · " + carTitle(st.idx.car[st.readyCar])); st.readyCar = null; }
         if (st.detail) drawDetail(true);
         else if (st.tab !== "swipe" && !$sheet.innerHTML) { const y = window.scrollY; render(); window.scrollTo(0, y); }
       } catch (e) { console.warn(e); }
@@ -990,10 +1053,19 @@
       buildIndex();
       if (!canWrite() && st.tab === "swipe") st.tab = "cars";
       render();
-      S.subscribe((table) => { if (table !== "submissions") scheduleReload(); });
+      S.subscribe((table, p) => {
+        if (table === "submissions") {
+          // eigener Link wurde vom Suchlauf eingelesen -> Meldung, sobald die Daten neu geladen sind
+          const n = p && p.new;
+          if (n && n.status === "done" && n.created_by === me().user_id && n.car_id) { st.readyCar = n.car_id; scheduleReload(); }
+          return;
+        }
+        scheduleReload();
+      });
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") scheduleReload(); });
+      // ?add=<Link> (z. B. aus einem iPhone-Kurzbefehl im Teilen-Menü)
       const add = new URLSearchParams(location.search).get("add");
-      if (add && canWrite()) { st.tab = "more"; render(); const i = document.getElementById("lu"); if (i) i.value = add; }
+      if (add && canWrite()) { history.replaceState(null, "", location.pathname); quickAdd(add); }
     } catch (e) {
       console.error(e);
       $app.innerHTML = `<div class="login"><h1>GARAGE<span>/</span>02</h1><p class="err">${esc(e.message || e)}</p><button class="btn" onclick="location.reload()">↻</button></div>`;
